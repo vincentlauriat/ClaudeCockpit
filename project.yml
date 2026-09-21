@@ -1,0 +1,69 @@
+name: ClaudeCockpit
+options:
+  bundleIdPrefix: fr.vincentlauriat
+  deploymentTarget:
+    macOS: "14.0"
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.1"
+  CockpitCore:
+    path: CockpitCore
+
+schemes:
+  ClaudeCockpit:
+    build:
+      targets:
+        ClaudeCockpit: all
+    run:
+      config: Debug
+
+targets:
+  ClaudeCockpit:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    dependencies:
+      - package: Sparkle
+      - package: CockpitCore
+        products: [CockpitShared, UsageKit, QuotaKit, RTKKit, SkillsKit]
+    sources:
+      - path: ClaudeCockpit
+        excludes:
+          - "**/*.entitlements"
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_NAME: ClaudeCockpit
+        PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.claudecockpit
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.9"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        CODE_SIGN_ENTITLEMENTS: ClaudeCockpit/Resources/ClaudeCockpit.entitlements
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        SWIFT_STRICT_CONCURRENCY: minimal
+    info:
+      path: ClaudeCockpit/Resources/Info.plist
+      properties:
+        CFBundleName: ClaudeCockpit
+        CFBundleDisplayName: Claude Cockpit
+        CFBundleIdentifier: fr.vincentlauriat.claudecockpit
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: "© 2026 Vincent Lauriat"
+        # Sparkle 2 auto-update. SUPublicEDKey is the public half of the EdDSA key
+        # held in the login keychain under the account "ClaudeCockpit". Never change
+        # it and never regenerate the key: every installed copy would reject updates.
+        # Private half backed up at ~/Documents/SparkleKeys/ClaudeCockpit-sparkle-private-key.txt
+        SUFeedURL: "https://raw.githubusercontent.com/vincentlauriat/ClaudeCockpit/main/appcast.xml"
+        SUPublicEDKey: "qDOgZMTMhl2U8KFaFds14R7tSskZhU0zZPLQmF3WDgQ="
+        SUEnableAutomaticChecks: true
+        SUScheduledCheckInterval: 86400
+        SUAutomaticallyUpdate: false
