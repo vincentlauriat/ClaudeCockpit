@@ -25,3 +25,4 @@ TODOS.md
 PLAN.md
 .omc/
 .env
+.build-*/
