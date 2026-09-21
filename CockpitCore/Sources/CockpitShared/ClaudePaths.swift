@@ -4,15 +4,24 @@ import Foundation
 /// so tests can point the whole app at a temporary directory.
 public struct ClaudePaths: Sendable, Equatable {
     public let home: URL
+    /// Explicit Claude config directory (honours `CLAUDE_CONFIG_DIR`); nil → `~/.claude`.
+    public let configDirOverride: URL?
 
-    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    public init(home: URL = FileManager.default.homeDirectoryForCurrentUser, configDir: URL? = nil) {
         self.home = home
+        self.configDirOverride = configDir
     }
 
-    public static let live = ClaudePaths()
+    /// Real home, with `CLAUDE_CONFIG_DIR` applied when set (as Claude Code does).
+    public static let live: ClaudePaths = {
+        let env = ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let override = (env?.isEmpty == false) ? URL(fileURLWithPath: (env! as NSString).expandingTildeInPath, isDirectory: true) : nil
+        return ClaudePaths(configDir: override)
+    }()
 
-    /// `~/.claude`
-    public var claudeDir: URL { home.appendingPathComponent(".claude", isDirectory: true) }
+    /// `~/.claude` (or `CLAUDE_CONFIG_DIR`)
+    public var claudeDir: URL { configDirOverride ?? home.appendingPathComponent(".claude", isDirectory: true) }
     /// `~/.claude/projects` — Claude Code transcripts (`<encoded cwd>/<session>.jsonl`).
     public var projectsDir: URL { claudeDir.appendingPathComponent("projects", isDirectory: true) }
     /// `~/.claude/.credentials.json` — fallback for the OAuth token.
