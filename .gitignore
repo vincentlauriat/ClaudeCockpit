@@ -1,0 +1,27 @@
+# Xcode / SwiftPM
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+build/
+DerivedData/
+.build/
+.swiftpm/
+*.profraw
+Package.resolved
+
+# Release artefacts (root and release/)
+*.dmg
+*.zip
+.sparkle-tools/
+
+# macOS
+.DS_Store
+
+# Working docs kept local
+COMMANDS.md
+MEMORY.md
+CHANGES.md
+TODOS.md
+PLAN.md
+.omc/
+.env
