@@ -11,7 +11,7 @@ private let samplePayload = """
   "seven_day":       { "utilization": 84.5, "resets_at": "2026-09-24T20:00:00.123Z" },
   "seven_day_opus":  { "utilization": 12,   "resets_at": "2026-09-24T20:00:00Z" },
   "seven_day_fable": { "utilization": 74.25, "resets_at": "2026-09-24T20:00:00Z" },
-  "seven_day_nimbus_quill": { "utilization": 3.5 },
+  "nimbus_quill": { "utilization": 3.5 },
   "extra_usage":     { "utilization": 10.0 },
   "account":         { "tier": "max" }
 }
@@ -45,13 +45,21 @@ final class QuotaAPITests: XCTestCase {
         XCTAssertFalse(week.isSession)
     }
 
-    func testModelMetersAreNamedSortedAndKeepMissingResetDates() throws {
+    func testModelMetersAreNamedAndSorted() throws {
         let snapshot = try parseSample()
-        XCTAssertEqual(snapshot.models.map(\.name), ["fable", "nimbus_quill", "opus"])
-        XCTAssertEqual(snapshot.models.allSatisfy { $0.windowHours == 168 }, true)
+        XCTAssertEqual(snapshot.models.map(\.name), ["fable", "opus"])
+        XCTAssertEqual(snapshot.models.allSatisfy { $0.windowHours == 168 && $0.isModelWindow }, true)
+    }
 
-        let quill = try XCTUnwrap(snapshot.models.first { $0.name == "nimbus_quill" })
-        XCTAssertNil(quill.resetsAt, "a model window without resets_at must still be reported")
+    func testUnprefixedBucketsAreKeptApartFromModels() throws {
+        let snapshot = try parseSample()
+        XCTAssertEqual(snapshot.other.map(\.key), ["nimbus_quill"])
+        XCTAssertFalse(snapshot.models.contains { $0.key == "nimbus_quill" },
+                       "an undocumented bucket must never be presented as a model")
+
+        let quill = try XCTUnwrap(snapshot.other.first)
+        XCTAssertFalse(quill.isModelWindow)
+        XCTAssertNil(quill.resetsAt, "a bucket without resets_at must still be reported")
         XCTAssertEqual(quill.utilization, 3.5, accuracy: 0.001)
     }
 
@@ -63,7 +71,7 @@ final class QuotaAPITests: XCTestCase {
 
     func testWeeklyMetersPutAllFirst() throws {
         let snapshot = try parseSample()
-        XCTAssertEqual(snapshot.weeklyMeters.map(\.name), ["all", "fable", "nimbus_quill", "opus"])
+        XCTAssertEqual(snapshot.weeklyMeters.map(\.name), ["all", "fable", "opus"])
     }
 
     func testPayloadWithoutKnownWindowIsMalformed() {

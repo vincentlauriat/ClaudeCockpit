@@ -72,6 +72,7 @@ struct MenuBarPanelView: View {
         [
             showLimits.description, showToday.description, showSavings.description,
             (store.quota?.weeklyMeters.count ?? -1).description,
+            (store.quota?.other.count ?? -1).description,
             (store.quota?.session != nil).description,
             (store.quotaState.errorMessage != nil).description,
             showsSavingsSection.description,
@@ -139,6 +140,15 @@ struct MenuBarPanelView: View {
                 ForEach(Array(gauge.weeklyMeters.enumerated()), id: \.element.id) { index, meter in
                     if index > 0 { Divider().opacity(0.4) }
                     QuotaMeterRow(meter: meter, now: now)
+                }
+                if !gauge.other.isEmpty {
+                    Divider().opacity(0.4)
+                    InfoRow(
+                        label: "Autres compartiments",
+                        value: FRFormat.integer(gauge.other.count),
+                        note: gauge.other.map {
+                            "\(QuotaFormat.prettyModel($0.name)) \(FRFormat.percent($0.utilization, fraction: false))"
+                        }.joined(separator: ", ") + " — détail dans la fenêtre.")
                 }
             } else {
                 InfoRow(

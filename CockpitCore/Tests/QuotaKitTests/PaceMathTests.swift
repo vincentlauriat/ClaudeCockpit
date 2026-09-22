@@ -96,7 +96,7 @@ final class PaceMathTests: XCTestCase {
     }
 
     func testProjectionIsNilWithoutResetDate() {
-        let meter = Meter(key: "seven_day_nimbus_quill", name: "nimbus_quill",
+        let meter = Meter(key: "nimbus_quill", name: "nimbus_quill",
                           utilization: 3.5, resetsAt: nil, windowHours: 168)
         XCTAssertNil(UsageMath.projection(for: meter, now: now))
     }

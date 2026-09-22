@@ -8,6 +8,7 @@ struct QuotasView: View {
     @Environment(CockpitStore.self) private var store
     @State private var now = Date()
     @State private var isRefreshing = false
+    @AppStorage("section.otherBuckets") private var showOtherBuckets = false
 
     private var meters: [Meter] {
         guard let gauge = store.quota else { return [] }
@@ -39,6 +40,27 @@ struct QuotasView: View {
                     VStack(spacing: 12) {
                         ForEach(meters) { meter in
                             QuotaMeterCard(meter: meter, now: now)
+                        }
+                    }
+                    if let other = store.quota?.other, !other.isEmpty {
+                        DisclosureCard(
+                            title: "Autres compartiments (\(other.count))",
+                            icon: "shippingbox",
+                            iconColor: Theme.slate,
+                            expanded: $showOtherBuckets
+                        ) {
+                            Text(QuotaFormat.bucketNote)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.bottom, 4)
+                            ForEach(Array(other.enumerated()), id: \.element.id) { index, meter in
+                                if index > 0 { Divider().opacity(0.4) }
+                                InfoRow(
+                                    label: QuotaFormat.label(for: meter),
+                                    value: FRFormat.percent(meter.utilization, fraction: false) + " utilisé",
+                                    note: "Clé API : \(meter.key)")
+                            }
                         }
                     }
                 }
