@@ -156,11 +156,22 @@ struct ResourcesView: View {
         .frame(maxWidth: 240)
     }
 
+    /// Library and Global always, projects only when they hold something (or are selected):
+    /// with a hundred scanned projects the row would otherwise be a wall of zeros.
+    private var badgeLevels: [ResourceLevel] {
+        levels.filter { level in
+            if case .project = level {
+                return level.id == levelID || (inventory?.count(kind: kind, level: level) ?? 0) > 0
+            }
+            return true
+        }
+    }
+
     /// One badge per level with its count, doubling as a shortcut.
     private var levelBadges: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(levels, id: \.id) { level in
+                ForEach(badgeLevels, id: \.id) { level in
                     let selected = level.id == levelID && !showPlugins
                     Button {
                         showPlugins = false

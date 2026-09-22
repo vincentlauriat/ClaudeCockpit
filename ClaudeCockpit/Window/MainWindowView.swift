@@ -3,6 +3,7 @@ import SwiftUI
 struct MainWindowView: View {
     static let windowID = "main"
     @Environment(CockpitStore.self) private var store
+    @EnvironmentObject private var updater: UpdaterController
     @AppStorage(SettingsKey.mainSection) private var sectionRaw: String = CockpitSection.overview.rawValue
 
     private var selection: Binding<CockpitSection?> {
@@ -24,7 +25,7 @@ struct MainWindowView: View {
                     row(.settings)
                 }
             }
-            .listStyle(.sidebar)
+            .modifier(SidebarStyle())
             .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
         } detail: {
             detail(for: selection.wrappedValue ?? .overview)
@@ -43,6 +44,9 @@ struct MainWindowView: View {
             }
         }
         .overlay(alignment: .bottom) { NoticeToast() }
+        .task {
+            await SnapshotRunner.runIfRequested(store: store, updater: updater) { sectionRaw = $0.rawValue }
+        }
     }
 
     private func row(_ section: CockpitSection) -> some View {
@@ -62,6 +66,18 @@ struct MainWindowView: View {
         case .agents: ResourcesView(kind: .agent)
         case .commands: ResourcesView(kind: .command)
         case .settings: SettingsView()
+        }
+    }
+}
+
+/// The vibrant sidebar material cannot be rendered by in-process snapshots, so
+/// the snapshot mode falls back to a flat list on a solid background.
+private struct SidebarStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if SnapshotRunner.requestedDirectory != nil {
+            content.listStyle(.plain).scrollContentBackground(.hidden).background(Theme.panel)
+        } else {
+            content.listStyle(.sidebar)
         }
     }
 }

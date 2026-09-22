@@ -7,20 +7,12 @@ struct CockpitApp: App {
     @StateObject private var updater = UpdaterController()
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarPanelView()
-                .environment(store)
-                .environmentObject(updater)
-        } label: {
-            MenuBarLabel(title: store.menuBarTitle)
-        }
-        .menuBarExtraStyle(.window)
-
+        // The main window comes first so SwiftUI opens it at launch (unless the
+        // user chose the menu-bar-only mode, handled in AppDelegate).
         Window("Claude Cockpit", id: MainWindowView.windowID) {
             MainWindowView()
                 .environment(store)
                 .environmentObject(updater)
-                .background(WindowOpener(store: store))
         }
         .defaultSize(width: 1160, height: 760)
         .commands {
@@ -30,6 +22,18 @@ struct CockpitApp: App {
             }
         }
 
+        MenuBarExtra {
+            MenuBarPanelView()
+                .environment(store)
+                .environmentObject(updater)
+        } label: {
+            // The label lives as long as the status item, so it is the one place
+            // guaranteed to exist at launch: it bridges `openWindow` to the store
+            // and starts the refresh loops.
+            MenuBarLabel(store: store)
+        }
+        .menuBarExtraStyle(.window)
+
         Settings {
             SettingsView()
                 .environment(store)
@@ -38,29 +42,23 @@ struct CockpitApp: App {
     }
 }
 
-/// Menu-bar label: gauge glyph + weekly percent.
+/// Menu-bar label: gauge glyph + weekly percent. Also the launch-time bridge.
 private struct MenuBarLabel: View {
-    let title: String
+    let store: CockpitStore
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "gauge.with.dots.needle.33percent")
-            Text(title).monospacedDigit()
+            Text(store.menuBarTitle).monospacedDigit()
         }
-    }
-}
-
-/// Bridges SwiftUI's `openWindow` action to the store and starts the loops.
-private struct WindowOpener: View {
-    let store: CockpitStore
-    @Environment(\.openWindow) private var openWindow
-    var body: some View {
-        Color.clear
-            .onAppear {
-                store.openWindowHandler = { openWindow(id: MainWindowView.windowID) }
-                store.start()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .cockpitOpenMainWindow)) { _ in
-                openWindow(id: MainWindowView.windowID)
-            }
+        .onAppear {
+            store.openWindowHandler = { openWindow(id: MainWindowView.windowID) }
+            store.start()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cockpitOpenMainWindow)) { _ in
+            openWindow(id: MainWindowView.windowID)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }

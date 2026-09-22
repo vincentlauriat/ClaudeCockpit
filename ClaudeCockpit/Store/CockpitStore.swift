@@ -274,11 +274,35 @@ final class CockpitStore {
         return lines.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
     }
 
+    private static let projectsCacheKey = "cache.projects"
+
+    /// Projects found by the last scan, persisted so the first inventory after
+    /// launch does not wait for a directory walk.
+    private var cachedProjects: [ProjectRef] {
+        get {
+            guard let data = defaults.data(forKey: Self.projectsCacheKey),
+                  let list = try? JSONDecoder().decode([ProjectRef].self, from: data) else { return [] }
+            return list.filter { FileManager.default.fileExists(atPath: $0.claudeDir.path) }
+        }
+        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: Self.projectsCacheKey) }
+    }
+
     func refreshSkills() async {
         if skills == nil { skillsState = .loading }
-        let roots = projectRoots
         do {
+            // 1. Fast path: inventory with the cached project list.
+            if skills == nil {
+                let cached = cachedProjects
+                if !cached.isEmpty {
+                    let quick = try await skillsStore.inventory(projects: cached)
+                    skills = quick
+                    skillsState = .ready(quick.generatedAt)
+                }
+            }
+            // 2. Full path: rescan roots (bounded walk) then rebuild the inventory.
+            let roots = projectRoots
             let projects = await Task.detached(priority: .utility) { ProjectScanner().scan(roots: roots) }.value
+            cachedProjects = projects
             let inventory = try await skillsStore.inventory(projects: projects)
             skills = inventory
             skillsState = .ready(inventory.generatedAt)
@@ -336,11 +360,15 @@ final class CockpitStore {
 
     /// Opens (or focuses) the main window and brings the app forward.
     func openMainWindow() {
+        if NSApp.activationPolicy() == .accessory {
+            // Menu-bar-only mode: the window still needs a reachable app to show up.
+            NSApp.setActivationPolicy(.regular)
+        }
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains(MainWindowView.windowID) == true || $0.title == "Claude Cockpit" }) {
+        if let handler = openWindowHandler {
+            handler()
+        } else if let window = NSApp.windows.first(where: { $0.title == "Claude Cockpit" }) {
             window.makeKeyAndOrderFront(nil)
-        } else {
-            openWindowHandler?()
         }
     }
     /// Injected by the App scene (SwiftUI `openWindow` action).

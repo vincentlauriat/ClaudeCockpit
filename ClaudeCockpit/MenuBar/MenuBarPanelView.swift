@@ -41,6 +41,7 @@ struct MenuBarPanelView: View {
     /// panel stops being a glance and the main window is the better place.
     private var maxHeight: CGFloat {
         let usable = (NSScreen.main?.visibleFrame.height ?? 800) - 24
+        if SnapshotRunner.requestedDirectory != nil { return 1400 }   // full panel in screenshots
         return max(320, min(720, usable))
     }
     /// Never zero: a zero measurement would collapse the popover entirely, so an
