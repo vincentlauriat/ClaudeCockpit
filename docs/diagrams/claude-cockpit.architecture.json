@@ -1,0 +1,380 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Claude Cockpit — architecture",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/vincentlauriat/ClaudeCockpit",
+      "revision": "da94fafb911a8b0a9e9fade3b44afd62cd126e24"
+    },
+    "views": [
+      {
+        "id": "surfaces",
+        "label": "Surfaces et store",
+        "focus": [
+          "panel",
+          "window",
+          "store"
+        ],
+        "note": "Le panneau et la fenêtre observent le même CockpitStore sur le main actor."
+      },
+      {
+        "id": "quotas",
+        "label": "Quotas Anthropic",
+        "focus": [
+          "store",
+          "quota",
+          "keychain",
+          "api"
+        ],
+        "note": "Jeton OAuth lu dans le trousseau, appel espacé de 3 min, backoff 15 min après un 429."
+      },
+      {
+        "id": "local",
+        "label": "Sources locales",
+        "focus": [
+          "usage",
+          "rtk",
+          "skills",
+          "transcripts",
+          "rtkdb",
+          "claudedir"
+        ],
+        "note": "Tout le reste est lu sur disque, sans réseau."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "panel",
+      "type": "frontend",
+      "label": "Panneau barre de menus",
+      "sublabel": "MenuBarPanelView",
+      "pos": [
+        40,
+        240
+      ],
+      "size": [
+        170,
+        60
+      ],
+      "sources": [
+        {
+          "path": "ClaudeCockpit/MenuBar/MenuBarPanelView.swift"
+        }
+      ]
+    },
+    {
+      "id": "window",
+      "type": "frontend",
+      "label": "Fenêtre principale",
+      "sublabel": "8 sections",
+      "pos": [
+        40,
+        380
+      ],
+      "size": [
+        170,
+        60
+      ],
+      "sources": [
+        {
+          "path": "ClaudeCockpit/Window/MainWindowView.swift"
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "backend",
+      "label": "CockpitStore",
+      "sublabel": "@MainActor, snapshots",
+      "pos": [
+        300,
+        310
+      ],
+      "size": [
+        160,
+        60
+      ],
+      "tag": "boucles de rafraîchissement",
+      "sources": [
+        {
+          "path": "ClaudeCockpit/Store/CockpitStore.swift"
+        }
+      ]
+    },
+    {
+      "id": "usage",
+      "type": "backend",
+      "label": "UsageKit",
+      "sublabel": "UsageService",
+      "pos": [
+        660,
+        100
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "CockpitCore/Sources/UsageKit/UsageService.swift"
+        }
+      ]
+    },
+    {
+      "id": "quota",
+      "type": "backend",
+      "label": "QuotaKit",
+      "sublabel": "QuotaService",
+      "pos": [
+        660,
+        240
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "CockpitCore/Sources/QuotaKit/QuotaService.swift"
+        }
+      ]
+    },
+    {
+      "id": "rtk",
+      "type": "backend",
+      "label": "RTKKit",
+      "sublabel": "RTKService",
+      "pos": [
+        660,
+        380
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "CockpitCore/Sources/RTKKit/RTKService.swift"
+        }
+      ]
+    },
+    {
+      "id": "skills",
+      "type": "backend",
+      "label": "SkillsKit",
+      "sublabel": "ResourceStore",
+      "pos": [
+        660,
+        520
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "CockpitCore/Sources/SkillsKit/ResourceStore.swift"
+        }
+      ]
+    },
+    {
+      "id": "transcripts",
+      "type": "database",
+      "label": "~/.claude/projects",
+      "sublabel": "transcripts JSONL",
+      "pos": [
+        920,
+        100
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "keychain",
+      "type": "security",
+      "label": "Trousseau macOS",
+      "sublabel": "Claude Code-credentials",
+      "pos": [
+        920,
+        240
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "api",
+      "type": "external",
+      "label": "api.anthropic.com",
+      "sublabel": "/api/oauth/usage",
+      "pos": [
+        1180,
+        240
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "rtkdb",
+      "type": "database",
+      "label": "history.db",
+      "sublabel": "SQLite rtk, lecture seule",
+      "pos": [
+        920,
+        380
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "claudedir",
+      "type": "database",
+      "label": "~/.claude",
+      "sublabel": "skills, agents, commands",
+      "pos": [
+        920,
+        520
+      ],
+      "size": [
+        170,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Package SPM CockpitCore",
+      "wraps": [
+        "usage",
+        "quota",
+        "rtk",
+        "skills"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Fichiers locaux",
+      "wraps": [
+        "transcripts",
+        "keychain",
+        "rtkdb",
+        "claudedir"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "store-to-panel",
+      "from": "store",
+      "to": "panel",
+      "label": "observe"
+    },
+    {
+      "id": "store-to-window",
+      "from": "store",
+      "to": "window",
+      "label": "observe"
+    },
+    {
+      "id": "usage-to-store",
+      "from": "usage",
+      "to": "store",
+      "label": "toutes les 30 s",
+      "variant": "emphasis"
+    },
+    {
+      "id": "quota-to-store",
+      "from": "quota",
+      "to": "store",
+      "label": "toutes les 3 min",
+      "labelSegment": 0
+    },
+    {
+      "id": "rtk-to-store",
+      "from": "rtk",
+      "to": "store",
+      "label": "FSEvents",
+      "labelSegment": 0
+    },
+    {
+      "id": "skills-to-store",
+      "from": "skills",
+      "to": "store",
+      "label": "DirectoryWatcher"
+    },
+    {
+      "id": "transcripts-to-usage",
+      "from": "transcripts",
+      "to": "usage",
+      "label": "scan incrémental"
+    },
+    {
+      "id": "keychain-to-quota",
+      "from": "keychain",
+      "to": "quota",
+      "label": "jeton OAuth",
+      "variant": "security"
+    },
+    {
+      "id": "api-to-quota",
+      "from": "api",
+      "to": "quota",
+      "label": "HTTPS",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "rtkdb-to-rtk",
+      "from": "rtkdb",
+      "to": "rtk",
+      "label": "SQL"
+    },
+    {
+      "id": "claudedir-to-skills",
+      "from": "claudedir",
+      "to": "skills",
+      "label": "copie / déplace",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Surfaces",
+      "items": [
+        "Panneau de barre de menus : quota hebdo, rythme, budget du jour",
+        "Fenêtre : Vue d'ensemble, Usage, Quotas, RTK, Skills, Agents, Commandes, Réglages"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Modules",
+      "items": [
+        "Quatre modules Swift testés, 161 tests",
+        "Chaque source tombe en panne sans bloquer les autres",
+        "Mises à jour Sparkle via appcast sur GitHub Pages"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Confidentialité",
+      "items": [
+        "Seul appel réseau : l'API usage d'Anthropic",
+        "Jeton gardé en mémoire, jamais écrit",
+        "Sauvegarde avant toute modification de skill"
+      ]
+    }
+  ]
+}
