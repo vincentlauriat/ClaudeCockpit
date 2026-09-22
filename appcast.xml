@@ -6,16 +6,16 @@
     <description>ClaudeCockpit release feed</description>
     <language>en</language>
     <item>
-      <title>v1.0.0</title>
-      <pubDate>Tue, 22 Sep 2026 09:16:52 +0200</pubDate>
-      <sparkle:version>16</sparkle:version>
-      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <title>v1.0.1</title>
+      <pubDate>Tue, 22 Sep 2026 18:44:37 +0200</pubDate>
+      <sparkle:version>23</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/vincentlauriat/ClaudeCockpit/releases/tag/v1.0.0</sparkle:releaseNotesLink>
+      <sparkle:releaseNotesLink>https://github.com/vincentlauriat/ClaudeCockpit/releases/tag/v1.0.1</sparkle:releaseNotesLink>
       <enclosure
-        url="https://github.com/vincentlauriat/ClaudeCockpit/releases/download/v1.0.0/ClaudeCockpit-1.0.0.dmg"
+        url="https://github.com/vincentlauriat/ClaudeCockpit/releases/download/v1.0.1/ClaudeCockpit-1.0.1.dmg"
         type="application/octet-stream"
-        sparkle:edSignature="taXdEq2himr3er/lZIdPeXrBY7hoA93MSS6T/qtejw8iFzeL+R8x8xcTi9MA4T5cDqKa+buS2LCJ3YeMwt0yBw==" length="5028932" />
+        sparkle:edSignature="Cppvc7kEVPjzPF+LUCW9MjMCWKrqnquZx4//+cVqnrbWQXOMlkMHKA1JHW15ZSHvuinsUlBJFU6cfVb3vfdiBQ==" length="5044346" />
     </item>
   </channel>
 </rss>
