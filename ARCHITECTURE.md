@@ -26,6 +26,8 @@ une bannière pendant que le reste continue de fonctionner.
 
 ## Diagramme de composants
 
+Une version interactive de ce diagramme (déplacement, zoom, recherche, vues guidées, références de source vérifiées contre le dépôt) est publiée sur [https://vincentlauriat.github.io/ClaudeCockpit/diagrams/claude-cockpit-architecture.html](https://vincentlauriat.github.io/ClaudeCockpit/diagrams/claude-cockpit-architecture.html). Sa source est `docs/diagrams/claude-cockpit.architecture.json`.
+
 ```mermaid
 flowchart TD
     subgraph app["Cible applicative — ClaudeCockpit"]
