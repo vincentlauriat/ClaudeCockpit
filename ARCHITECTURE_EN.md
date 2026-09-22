@@ -23,6 +23,8 @@ a state, and the corresponding section renders a banner while the rest keeps wor
 
 ## Component diagram
 
+An interactive version of this diagram (pan, zoom, search, guided views, source references verified against the repository) is published at [https://vincentlauriat.github.io/ClaudeCockpit/diagrams/claude-cockpit-architecture.html](https://vincentlauriat.github.io/ClaudeCockpit/diagrams/claude-cockpit-architecture.html). Its source is `docs/diagrams/claude-cockpit.architecture.json`.
+
 ```mermaid
 flowchart TD
     subgraph app["App target — ClaudeCockpit"]
