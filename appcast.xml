@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>ClaudeCockpit</title>
+    <link>https://raw.githubusercontent.com/vincentlauriat/ClaudeCockpit/main/appcast.xml</link>
+    <description>ClaudeCockpit release feed</description>
+    <language>en</language>
+    <item>
+      <title>v1.0.0</title>
+      <pubDate>Tue, 22 Sep 2026 09:16:52 +0200</pubDate>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/vincentlauriat/ClaudeCockpit/releases/tag/v1.0.0</sparkle:releaseNotesLink>
+      <enclosure
+        url="https://github.com/vincentlauriat/ClaudeCockpit/releases/download/v1.0.0/ClaudeCockpit-1.0.0.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="taXdEq2himr3er/lZIdPeXrBY7hoA93MSS6T/qtejw8iFzeL+R8x8xcTi9MA4T5cDqKa+buS2LCJ3YeMwt0yBw==" length="5028932" />
+    </item>
+  </channel>
+</rss>
