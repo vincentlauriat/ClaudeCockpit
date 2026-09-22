@@ -208,7 +208,7 @@ ClaudeCockpit/
 ## Release
 
 ```bash
-./Scripts/release.sh 1.0.0
+./Scripts/release.sh 1.0.1
 ```
 
 The script regenerates the project, builds Release, stages the app through `ditto
