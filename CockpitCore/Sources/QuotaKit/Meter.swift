@@ -17,6 +17,10 @@ public struct Meter: Identifiable, Equatable, Hashable, Sendable {
 
     public var isSession: Bool { key == Meter.sessionKey }
 
+    /// `seven_day_<model>` — a documented per-model weekly window. Anything else that
+    /// is neither the session nor the `all` meter is an undocumented quota bucket.
+    public var isModelWindow: Bool { key.hasPrefix(Meter.modelKeyPrefix) }
+
     public static let sessionKey = "five_hour"
     public static let weekKey = "seven_day"
     /// Prefix stripped from per-model weekly keys (`seven_day_opus` → `opus`).
@@ -39,14 +43,19 @@ public struct GaugeSnapshot: Equatable, Sendable {
     public let session: Meter?
     /// The weekly `all` window — the one that actually runs out.
     public let week: Meter?
-    /// Per-model weekly meters (everything that is neither `five_hour` nor `seven_day`).
+    /// Per-model weekly meters: every `seven_day_<model>` key.
     public let models: [Meter]
+    /// Undocumented buckets the API also reports (`nimbus_quill`, …): neither a known
+    /// window nor a model. Kept as-is so the UI can show them without presenting them
+    /// as models.
+    public let other: [Meter]
 
-    public init(fetchedAt: Date, session: Meter?, week: Meter?, models: [Meter]) {
+    public init(fetchedAt: Date, session: Meter?, week: Meter?, models: [Meter], other: [Meter] = []) {
         self.fetchedAt = fetchedAt
         self.session = session
         self.week = week
         self.models = models
+        self.other = other
     }
 
     /// `all` first, then the per-model meters.

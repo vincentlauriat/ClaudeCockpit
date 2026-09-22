@@ -67,6 +67,7 @@ public struct QuotaAPI: QuotaFetching, Sendable {
         var session: Meter?
         var week: Meter?
         var models: [Meter] = []
+        var other: [Meter] = []
 
         for (key, value) in root {
             guard let dict = value as? [String: Any],
@@ -85,16 +86,21 @@ public struct QuotaAPI: QuotaFetching, Sendable {
                 week = Meter(key: key, name: "all", utilization: utilization,
                              resetsAt: resetsAt, windowHours: 168)
             default:
-                let name = key.hasPrefix(Meter.modelKeyPrefix)
-                    ? String(key.dropFirst(Meter.modelKeyPrefix.count))
-                    : key
-                models.append(Meter(key: key, name: name, utilization: utilization,
-                                    resetsAt: resetsAt, windowHours: 168))
+                if key.hasPrefix(Meter.modelKeyPrefix) {
+                    let name = String(key.dropFirst(Meter.modelKeyPrefix.count))
+                    models.append(Meter(key: key, name: name, utilization: utilization,
+                                        resetsAt: resetsAt, windowHours: 168))
+                } else {
+                    // Opaque bucket (`nimbus_quill`, …): no documented window length.
+                    other.append(Meter(key: key, name: key, utilization: utilization,
+                                       resetsAt: resetsAt, windowHours: 168))
+                }
             }
         }
         models.sort { $0.name < $1.name }
+        other.sort { $0.name < $1.name }
         guard session != nil || week != nil else { throw QuotaError.malformed }
-        return GaugeSnapshot(fetchedAt: fetchedAt, session: session, week: week, models: models)
+        return GaugeSnapshot(fetchedAt: fetchedAt, session: session, week: week, models: models, other: other)
     }
 
     private static func number(_ value: Any?) -> Double? {

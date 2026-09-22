@@ -19,8 +19,12 @@ enum QuotaFormat {
     static func label(for meter: Meter) -> String {
         if meter.isSession { return "Session en cours (5 h)" }
         if meter.name == "all" { return "Tous modèles (7 jours)" }
-        return "Modèle \(prettyModel(meter.name)) (7 jours)"
+        if meter.isModelWindow { return "Modèle \(prettyModel(meter.name)) (7 jours)" }
+        return "Compartiment \(prettyModel(meter.name))"
     }
+
+    /// What an undocumented bucket is, in one line.
+    static let bucketNote = "Compartiment de quota renvoyé tel quel par l'API d'Anthropic, sans documentation publique. Ce n'est pas un modèle."
 
     /// `lun. 21 à 14:05`
     static func dayTime(_ date: Date) -> String {
@@ -191,6 +195,9 @@ struct QuotaMeterRow: View {
     private var raw: PaceProjection? { UsageMath.projection(for: meter, now: now) }
 
     private var note: String {
+        if !meter.isModelWindow && !meter.isSession && meter.name != "all" {
+            return QuotaFormat.bucketNote
+        }
         guard let raw else { return "Aucune date de réinitialisation communiquée." }
         guard let projection = QuotaFormat.meaningful(raw) else {
             return QuotaFormat.resetSentence(raw) + " Fenêtre trop récente pour projeter un rythme fiable."
