@@ -146,6 +146,13 @@ final class TranscriptScannerTests: XCTestCase {
         XCTAssertTrue(midWrite.newEvents.isEmpty, "an incomplete line yields no event")
         XCTAssertEqual(midWrite.events.count, 4)
 
+        // The tail stays unread, so the file's offset is behind its size. Comparing the
+        // offset with the size (rather than tracking the size) made this file look changed
+        // on every single pass, re-reading the tail and re-writing the caches each time.
+        let stillMidWrite = await scanner.scan()
+        XCTAssertEqual(stillMidWrite.bytesRead, 0, "a pending partial line must not be re-read")
+        XCTAssertTrue(stillMidWrite.newEvents.isEmpty)
+
         try fixture.appendPartial(String(line.dropFirst(half.count)) + "\n", to: fileA)
         let complete = await scanner.scan()
         XCTAssertEqual(complete.newEvents.map(\.id), ["uuid-a4"])
@@ -157,10 +164,13 @@ final class TranscriptScannerTests: XCTestCase {
         _ = await scanner.scan()
 
         let cacheURL = await scanner.cacheFileURL
+        let eventsURL = await scanner.eventsCacheFileURL
         XCTAssertEqual(cacheURL, fixture.paths.appSupportDir.appendingPathComponent("scan-cache.json"))
+        XCTAssertEqual(eventsURL, fixture.paths.appSupportDir.appendingPathComponent("scan-events.json"))
         XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: eventsURL.path))
 
-        // A fresh scanner sharing the same paths reloads the cache instead of re-reading.
+        // A fresh scanner sharing the same paths reloads both caches instead of re-reading.
         let warm = TranscriptScanner(paths: fixture.paths)
         let warmResult = await warm.scan()
         XCTAssertEqual(warmResult.events.count, 4)
@@ -168,9 +178,94 @@ final class TranscriptScannerTests: XCTestCase {
 
         await warm.reset()
         XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: eventsURL.path), "reset clears both files")
         let afterReset = await warm.scan()
         XCTAssertEqual(afterReset.events.count, 4)
         XCTAssertGreaterThan(afterReset.bytesRead, 0, "reset forces a full re-read")
+    }
+
+    /// The file the 30 s loop rewrites must carry resume state only. Holding the whole event
+    /// history there is what made it 24 MB on a real machine.
+    func testResumeCacheCarriesNoEvents() async throws {
+        let scanner = TranscriptScanner(paths: fixture.paths)
+        _ = await scanner.scan()
+
+        let cacheURL = await scanner.cacheFileURL
+        let cache = try String(contentsOf: cacheURL, encoding: .utf8)
+        XCTAssertTrue(cache.contains("offset"), "la reprise a besoin des offsets")
+        XCTAssertTrue(cache.contains("Portage d'UsageKit"), "les titres de session y restent")
+        XCTAssertFalse(cache.contains("msg-a1"), "aucun évènement ne doit être écrit ici")
+        XCTAssertFalse(cache.contains("inputTokens"), "aucun évènement ne doit être écrit ici")
+
+        let events = try String(contentsOf: await scanner.eventsCacheFileURL, encoding: .utf8)
+        XCTAssertTrue(events.contains("msg-a1"), "les évènements vont dans le second fichier")
+    }
+
+    /// The scan loop runs every 30 s; neither cache may be rewritten on every pass.
+    func testCacheWritesAreThrottledAndFlushForcesThem() async throws {
+        let scanner = TranscriptScanner(
+            paths: fixture.paths, cachePersistInterval: 60, eventsPersistInterval: 600)
+        _ = await scanner.scan()
+
+        let cacheURL = await scanner.cacheFileURL
+        let eventsURL = await scanner.eventsCacheFileURL
+        let cacheBefore = try Data(contentsOf: cacheURL)
+        let eventsBefore = try Data(contentsOf: eventsURL)
+
+        try fixture.append(
+            TranscriptFixture.assistantLine(
+                uuid: "uuid-a5", messageId: "msg-a5", sessionId: sessionA,
+                model: "claude-sonnet-5", timestamp: t0.addingTimeInterval(800), cwd: cwdA,
+                inputTokens: 7, outputTokens: 7),
+            to: fileA)
+
+        let second = await scanner.scan()
+        XCTAssertEqual(second.newEvents.map(\.id), ["uuid-a5"], "l'évènement est bien lu")
+        XCTAssertEqual(try Data(contentsOf: cacheURL), cacheBefore, "la reprise reste inchangée")
+        XCTAssertEqual(try Data(contentsOf: eventsURL), eventsBefore, "les évènements restent inchangés")
+
+        await scanner.flush()
+        XCTAssertNotEqual(try Data(contentsOf: cacheURL), cacheBefore, "flush ignore le throttle")
+        XCTAssertNotEqual(try Data(contentsOf: eventsURL), eventsBefore, "flush ignore le throttle")
+    }
+
+    /// The two files are written on different rhythms, so the events cache can lag behind the
+    /// resume cache. Each entry stamps the offset it covers, so a mismatch simply re-reads
+    /// that transcript instead of returning a truncated history.
+    func testStaleEventsCacheForcesAReReadInsteadOfLosingEvents() async throws {
+        let scanner = TranscriptScanner(
+            paths: fixture.paths, cachePersistInterval: 0, eventsPersistInterval: 600)
+        _ = await scanner.scan()
+
+        // The resume cache moves on; the events cache stays where it was.
+        try fixture.append(
+            TranscriptFixture.assistantLine(
+                uuid: "uuid-a6", messageId: "msg-a6", sessionId: sessionA,
+                model: "claude-sonnet-5", timestamp: t0.addingTimeInterval(900), cwd: cwdA,
+                inputTokens: 3, outputTokens: 3),
+            to: fileA)
+        let second = await scanner.scan()
+        XCTAssertEqual(second.events.count, 5)
+
+        let warm = TranscriptScanner(paths: fixture.paths)
+        let warmResult = await warm.scan()
+        XCTAssertEqual(warmResult.events.count, 5, "aucun évènement perdu")
+        XCTAssertGreaterThan(warmResult.bytesRead, 0, "le transcript désynchronisé est relu")
+        XCTAssertEqual(
+            Set(warmResult.events.map(\.id)),
+            ["uuid-a1", "uuid-a2", "uuid-a6", "uuid-b1", "uuid-s1"])
+    }
+
+    /// A missing events cache must not silently produce an empty history.
+    func testMissingEventsCacheRebuildsEverythingFromTheTranscripts() async throws {
+        let scanner = TranscriptScanner(paths: fixture.paths)
+        _ = await scanner.scan()
+        try FileManager.default.removeItem(at: await scanner.eventsCacheFileURL)
+
+        let warm = TranscriptScanner(paths: fixture.paths)
+        let warmResult = await warm.scan()
+        XCTAssertEqual(warmResult.events.count, 4)
+        XCTAssertGreaterThan(warmResult.bytesRead, 0, "tout est relu depuis les transcripts")
     }
 
     func testServiceRefreshReturnsEventsAndFailsOnMissingProjectsDir() async throws {

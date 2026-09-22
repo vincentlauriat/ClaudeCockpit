@@ -73,7 +73,7 @@ struct UsageView: View {
 
     @ViewBuilder
     private func content(money: @escaping (Double) -> String) -> some View {
-        if let usage = store.usage, !usage.filteredEvents.isEmpty {
+        if let usage = store.usage, usage.filteredEventCount > 0 {
             dashboard(usage, money: money)
         } else if store.usage == nil && store.usageState.errorMessage == nil {
             placeholder(

@@ -20,7 +20,12 @@ import CockpitShared
 ///    checkpoint plus whatever the WAL carries.
 ///
 /// The copy is made **once per `read` block**, not once per query, so a full
-/// snapshot costs at most one copy.
+/// snapshot costs at most one copy — and it is cached process-wide, keyed on the
+/// modification date and size of `history.db` and its `-wal` sibling. Three
+/// callers refresh the RTK screen (the database watcher, the store's 60 s poll
+/// and "tout rafraîchir"), and copying 10 MB for each of them while rtk sits
+/// idle is pure waste: the copy is remade only once the source actually
+/// changed, and the stale one is deleted then.
 public struct TrackingRepository: Sendable {
 
     public let databaseURL: URL
@@ -68,6 +73,11 @@ public struct TrackingRepository: Sendable {
         return try body(reader)
     }
 
+    /// Drops the cached temporary copy, if any. Tests call it between fixtures;
+    /// production code never needs to, since the copy invalidates itself as soon
+    /// as the source database changes.
+    static func invalidateCopyCache() { CopyCache.shared.invalidate() }
+
     // MARK: - Single-query conveniences
 
     public func validateSchema() throws -> Bool { try read { try $0.validateSchema() } }
@@ -109,19 +119,22 @@ extension TrackingRepository {
 
         /// Path actually opened — either the live database or a temp copy of it.
         public let path: String
-        /// Directory holding the temp copy, `nil` when reading in place.
-        private let temporaryDirectory: URL?
+        /// Whether `path` points at a copy rather than at the live database.
+        private let readsACopy: Bool
 
-        init(databaseURL: URL) throws {
-            if Self.canReadInPlace(databaseURL.path) {
+        /// - Parameter forceCopy: skips the in-place probe and always goes
+        ///   through the cached copy. Tests use it; nothing else should.
+        init(databaseURL: URL, forceCopy: Bool = false) throws {
+            if !forceCopy, Self.canReadInPlace(databaseURL.path) {
                 path = databaseURL.path
-                temporaryDirectory = nil
+                readsACopy = false
                 return
             }
+            guard let signature = CopySignature(databaseURL: databaseURL) else {
+                throw RTKError.databaseNotFound
+            }
             let fm = FileManager.default
-            let dir = fm.temporaryDirectory
-                .appendingPathComponent("rtkkit-\(UUID().uuidString)", isDirectory: true)
-            do {
+            let directory = try CopyCache.shared.directory(for: signature) { dir in
                 try fm.createDirectory(at: dir, withIntermediateDirectories: true)
                 let copy = dir.appendingPathComponent("history.db")
                 try fm.copyItem(at: databaseURL, to: copy)
@@ -129,12 +142,9 @@ extension TrackingRepository {
                 if fm.fileExists(atPath: wal.path) {
                     try? fm.copyItem(at: wal, to: URL(fileURLWithPath: copy.path + "-wal"))
                 }
-                path = copy.path
-                temporaryDirectory = dir
-            } catch {
-                try? fm.removeItem(at: dir)
-                throw RTKError.sqlite(error.localizedDescription)
             }
+            path = directory.appendingPathComponent("history.db").path
+            readsACopy = true
         }
 
         /// Opening a SQLite database is lazy: `sqlite3_open_v2` succeeds even
@@ -147,15 +157,15 @@ extension TrackingRepository {
             return (try? db.scalar("SELECT count(*) FROM sqlite_master")) != nil
         }
 
-        func discardTemporaryCopy() {
-            guard let temporaryDirectory else { return }
-            try? FileManager.default.removeItem(at: temporaryDirectory)
-        }
+        /// Kept for symmetry with `read(_:)`: the temporary copy now outlives the
+        /// read block on purpose, and is deleted by `CopyCache` the moment the
+        /// source database changes.
+        func discardTemporaryCopy() {}
 
         /// A fresh connection, read-only when the ladder read in place.
         private func connection() throws -> Connection {
             do {
-                return try Connection(path, readonly: temporaryDirectory == nil)
+                return try Connection(path, readonly: !readsACopy)
             } catch {
                 throw RTKError.sqlite(error.localizedDescription)
             }
@@ -425,5 +435,100 @@ enum RTKTimestamp {
         let digits = raw[raw.index(after: dot)..<end]
         guard digits.count > 3 else { return raw }
         return String(raw[...dot]) + digits.prefix(3) + raw[end...]
+    }
+}
+
+
+// MARK: - Temporary copy cache
+
+extension TrackingRepository {
+
+    /// What makes one temporary copy still valid: the database and its `-wal`
+    /// sibling, each identified by modification date and byte size. rtk only
+    /// ever appends, so a source that matches on both cannot have changed
+    /// without the copy being stale in a way this misses.
+    struct CopySignature: Equatable {
+        let path: String
+        let databaseModified: Date
+        let databaseSize: UInt64
+        let walModified: Date?
+        let walSize: UInt64?
+
+        init?(databaseURL: URL) {
+            guard let stamp = Self.stamp(databaseURL.path) else { return nil }
+            path = databaseURL.path
+            databaseModified = stamp.modified
+            databaseSize = stamp.size
+            let wal = Self.stamp(databaseURL.path + "-wal")
+            walModified = wal?.modified
+            walSize = wal?.size
+        }
+
+        private static func stamp(_ path: String) -> (modified: Date, size: UInt64)? {
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                  let modified = attrs[.modificationDate] as? Date,
+                  let size = (attrs[.size] as? NSNumber)?.uint64Value
+            else { return nil }
+            return (modified, size)
+        }
+    }
+
+    /// Holds at most one temporary copy: the app reads a single database at a
+    /// time, so a one-entry cache is enough and a changed path evicts.
+    final class CopyCache: @unchecked Sendable {
+        static let shared = CopyCache()
+
+        private let lock = NSLock()
+        private var signature: CopySignature?
+        private var directory: URL?
+        /// The previous copy, kept one generation longer. A `Reader` opens a fresh
+        /// connection per query, so deleting a superseded copy on the spot would make
+        /// another thread's in-flight snapshot fail on a path that just vanished — and
+        /// a signature change is exactly when the watcher fires a concurrent refresh.
+        private var retired: URL?
+
+        /// The directory holding a copy valid for `signature`, making one with
+        /// `make` when the cached one is missing or stale. The copy is built
+        /// under the lock so concurrent refreshes share one copy instead of
+        /// racing to duplicate a 10 MB database.
+        func directory(for signature: CopySignature, make: (URL) throws -> Void) throws -> URL {
+            lock.lock()
+            defer { lock.unlock() }
+
+            if self.signature == signature, let directory,
+               FileManager.default.fileExists(
+                   atPath: directory.appendingPathComponent("history.db").path) {
+                return directory
+            }
+
+            let fresh = FileManager.default.temporaryDirectory
+                .appendingPathComponent("rtkkit-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try make(fresh)
+            } catch {
+                try? FileManager.default.removeItem(at: fresh)
+                throw RTKError.sqlite(error.localizedDescription)
+            }
+            // Retire the superseded copy rather than deleting it: at most two copies
+            // exist at any time, and a reader would have to survive two consecutive
+            // signature changes to lose the file under it.
+            if let retired { try? FileManager.default.removeItem(at: retired) }
+            retired = self.directory
+            self.signature = signature
+            self.directory = fresh
+            return fresh
+        }
+
+        func invalidate() {
+            lock.lock()
+            for url in [directory, retired] {
+                guard let url else { continue }
+                try? FileManager.default.removeItem(at: url)
+            }
+            directory = nil
+            retired = nil
+            signature = nil
+            lock.unlock()
+        }
     }
 }

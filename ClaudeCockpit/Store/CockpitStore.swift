@@ -151,6 +151,10 @@ final class CockpitStore {
         guard !loopsStarted else { return }
         loopsStarted = true
 
+        // Housekeeping: drop skill backups older than 30 days (off the main thread).
+        let paths = paths
+        Task.detached(priority: .background) { BackupPruner.prune(paths: paths) }
+
         loopTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshUsage()
@@ -164,13 +168,7 @@ final class CockpitStore {
                 try? await Task.sleep(for: .seconds(180))
             }
         })
-        loopTasks.append(Task { [weak self] in
-            await self?.refreshRTK()
-            guard let stream = self?.rtkService.changes else { return }
-            for await _ in stream {
-                await self?.refreshRTK()
-            }
-        })
+        startRTKWatch()
         loopTasks.append(Task { [weak self] in
             // Fallback poll for rtk in case the watcher stream ended (no DB at launch).
             while !Task.isCancelled {
@@ -194,6 +192,26 @@ final class CockpitStore {
         })
     }
     private var skillsWatcher: DirectoryWatcher?
+
+    /// The task consuming `rtkService.changes`, kept apart from `loopTasks` because it is
+    /// bound to one `RTKService` instance: when the user changes the database path a new
+    /// service replaces it and this task has to be cancelled and restarted, or nobody
+    /// subscribes to the new service's stream.
+    private var rtkWatchTask: Task<Void, Never>?
+
+    private func startRTKWatch() {
+        rtkWatchTask?.cancel()
+        // Captured now, so the loop can never end up awaiting a stream from a service the
+        // store has since replaced.
+        let service = rtkService
+        rtkWatchTask = Task { [weak self] in
+            await self?.refreshRTK()
+            for await _ in service.changes {
+                if Task.isCancelled { return }
+                await self?.refreshRTK()
+            }
+        }
+    }
 
     func refreshAll() async {
         async let a: Void = refreshUsage()
@@ -257,12 +275,17 @@ final class CockpitStore {
 
     /// Re-resolves the rtk database after the user changed the path setting.
     func rtkPathDidChange() {
+        // Cancel before stopping the old service: `stop()` finishes its stream, and the
+        // loop must not race a refresh against the service it is about to lose.
+        rtkWatchTask?.cancel()
+        rtkWatchTask = nil
         rtkService.stop()
         let raw = defaults.string(forKey: SettingsKey.rtkDBPath) ?? ""
         let override = raw.isEmpty ? nil : URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
         rtkService = RTKService(paths: paths, overridePath: override)
         rtk = nil
-        Task { await refreshRTK() }
+        // Refreshes once and re-subscribes, this time to the new service.
+        startRTKWatch()
     }
     var rtkDatabaseURL: URL? { rtkService.databaseURL }
 

@@ -96,20 +96,22 @@ public actor ResourceStore {
         let destination = itemURL(kind: resource.kind, name: name, in: destinationDirectory)
 
         var backupRoot: URL?
-        if fileManager.fileExists(atPath: destination.path) {
+        var backupURL: URL?
+        let replacesExisting = fileManager.fileExists(atPath: destination.path)
+        if replacesExisting {
             guard overwrite else { throw SkillsError.alreadyExists(destination) }
             let root = try makeBackupRoot()
             backupRoot = root
-            try backup(destination, kind: resource.kind, level: level, into: root)
-            try remove(destination)
+            backupURL = try backup(destination, kind: resource.kind, level: level, into: root)
         }
 
         try createDirectory(destinationDirectory)
-        do {
-            try fileManager.copyItem(at: source, to: destination)
-        } catch {
-            throw SkillsError.io("Copie impossible : \(error.localizedDescription)")
-        }
+        try install(
+            source,
+            at: destination,
+            replacingExisting: replacesExisting,
+            backup: backupURL,
+            failureMessage: "Copie impossible")
 
         if mode == .move {
             let root = try backupRoot ?? makeBackupRoot()
@@ -140,19 +142,21 @@ public actor ResourceStore {
         guard paths.isInsideHome(destinationDirectory) else { throw SkillsError.outsideHome }
         let destination = itemURL(kind: .skill, name: name, in: destinationDirectory)
 
-        if fileManager.fileExists(atPath: destination.path) {
+        var backupURL: URL?
+        let replacesExisting = fileManager.fileExists(atPath: destination.path)
+        if replacesExisting {
             guard overwrite else { throw SkillsError.alreadyExists(destination) }
             let root = try makeBackupRoot()
-            try backup(destination, kind: .skill, level: level, into: root)
-            try remove(destination)
+            backupURL = try backup(destination, kind: .skill, level: level, into: root)
         }
 
         try createDirectory(destinationDirectory)
-        do {
-            try fileManager.copyItem(at: plugin.url, to: destination)
-        } catch {
-            throw SkillsError.io("Import impossible : \(error.localizedDescription)")
-        }
+        try install(
+            plugin.url,
+            at: destination,
+            replacingExisting: replacesExisting,
+            backup: backupURL,
+            failureMessage: "Import impossible")
 
         guard let created = load(kind: .skill, level: level, itemURL: destination) else {
             throw SkillsError.io("Le skill importé est illisible.")
@@ -318,6 +322,53 @@ public actor ResourceStore {
             throw SkillsError.io("Sauvegarde impossible : \(error.localizedDescription)")
         }
         return destination
+    }
+
+    /// Copies `source` onto `destination` without ever leaving the destination missing.
+    ///
+    /// The copy lands on a hidden sibling first, and only a successful copy is swapped in —
+    /// atomically when something was already there. Removing the destination up front, as
+    /// this used to, meant a failing copy destroyed the user's resource and left only the
+    /// backup behind.
+    private func install(
+        _ source: URL,
+        at destination: URL,
+        replacingExisting: Bool,
+        backup: URL?,
+        failureMessage: String
+    ) throws {
+        let directory = destination.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent(
+            ".\(destination.lastPathComponent).cockpit-tmp-\(UUID().uuidString.prefix(8))")
+        guard paths.isInsideHome(temporary) else { throw SkillsError.outsideHome }
+        if fileManager.fileExists(atPath: temporary.path) {
+            try? fileManager.removeItem(at: temporary)
+        }
+
+        do {
+            try fileManager.copyItem(at: source, to: temporary)
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw failure("\(failureMessage) : \(error.localizedDescription)", backup: backup)
+        }
+
+        do {
+            if replacingExisting {
+                _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
+            } else {
+                try fileManager.moveItem(at: temporary, to: destination)
+            }
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            throw failure("\(failureMessage) : \(error.localizedDescription)", backup: backup)
+        }
+    }
+
+    /// Names the backup in the message whenever one was taken, so the user is never told a
+    /// mutation failed without being told where the saved copy is.
+    private func failure(_ message: String, backup: URL?) -> SkillsError {
+        guard let backup else { return .io(message) }
+        return .ioAfterBackup(message, backup)
     }
 
     private func createDirectory(_ url: URL) throws {

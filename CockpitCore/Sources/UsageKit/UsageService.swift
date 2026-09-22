@@ -45,6 +45,13 @@ public actor UsageService {
         return result.events
     }
 
+    /// Writes the scanner's caches to disk right away, ignoring their throttles. Worth
+    /// calling when the app is going away; skipping it only costs a partial re-read on the
+    /// next launch, since each cache entry records the offset it covers.
+    public func flush() async {
+        await scanner.flush()
+    }
+
     /// Drops every cached offset and re-reads all transcripts from byte zero.
     @discardableResult
     public func rescan() async throws -> [UsageEvent] {

@@ -248,6 +248,11 @@ public enum SkillsError: Error, Equatable, LocalizedError {
     case notFound
     /// Any filesystem or validation failure, with an explanation.
     case io(String)
+    /// A filesystem failure that happened *after* the destination had been
+    /// backed up. The destination itself is untouched, but the copy of it taken
+    /// before the attempt is worth naming: it is the only other place the user
+    /// can recover the resource from.
+    case ioAfterBackup(String, URL)
 
     public var errorDescription: String? {
         switch self {
@@ -259,6 +264,8 @@ public enum SkillsError: Error, Equatable, LocalizedError {
             return "Ressource introuvable."
         case .io(let message):
             return message
+        case .ioAfterBackup(let message, let backup):
+            return "\(message) Une sauvegarde reste disponible dans : \(backup.path)"
         }
     }
 }

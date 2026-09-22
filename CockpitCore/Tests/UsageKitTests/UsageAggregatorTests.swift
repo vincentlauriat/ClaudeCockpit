@@ -60,7 +60,19 @@ final class UsageAggregatorTests: XCTestCase {
         XCTAssertEqual(snap.totals.cacheCreationTokens, 0)
         XCTAssertEqual(snap.totals.totalTokens, 4_000_000)
         XCTAssertEqual(snap.totals.estimatedCostUSD, 32.0, accuracy: 1e-9)
-        XCTAssertEqual(snap.filteredEvents.map(\.id), ["e4", "e3", "e1", "e2"], "sorted oldest first")
+        XCTAssertEqual(snap.filteredEventCount, 4)
+    }
+
+    /// The snapshot only exposes the filtered *count*, so the ordering every series and
+    /// breakdown depends on is asserted against the helper that produces it.
+    func testFilteredEventsAreSortedOldestFirst() {
+        let ranged = UsageAggregator.rangedEvents(
+            events, range: .all, now: now, calendar: calendar)
+        XCTAssertEqual(ranged.map(\.id), ["e4", "e3", "e1", "e2"], "sorted oldest first")
+
+        let lastWeek = UsageAggregator.rangedEvents(
+            events, range: .last7Days, now: now, calendar: calendar)
+        XCTAssertEqual(lastWeek.map(\.id), ["e3", "e1", "e2"], "the 15th falls outside the window")
     }
 
     func testCostAndTokensTodayIgnoreTheRangeFilter() {

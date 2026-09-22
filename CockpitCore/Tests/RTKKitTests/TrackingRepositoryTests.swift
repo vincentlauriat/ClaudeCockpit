@@ -8,8 +8,16 @@ final class TrackingRepositoryTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
+        // The temporary-copy cache is process-wide: a copy left by another test would
+        // otherwise be matched against this fixture's signature.
+        TrackingRepository.invalidateCopyCache()
         let url = try Fixture.makeDatabase(in: makeTemporaryDirectory())
         repository = TrackingRepository(databaseURL: url)
+    }
+
+    override func tearDownWithError() throws {
+        TrackingRepository.invalidateCopyCache()
+        try super.tearDownWithError()
     }
 
     // MARK: - Schema
@@ -28,6 +36,70 @@ final class TrackingRepositoryTests: XCTestCase {
         XCTAssertThrowsError(try TrackingRepository(databaseURL: missing).recordCount()) { error in
             XCTAssertEqual(error as? RTKError, .databaseNotFound)
         }
+    }
+
+    // MARK: - Temporary copy
+
+    /// rtk idle means a WAL without its `-shm`, so every read goes through a copy of the
+    /// database. Three refresh sources hit that path; copying 10 MB each time is the waste
+    /// the cache exists to remove.
+    func testTemporaryCopyIsReusedWhileTheDatabaseIsUnchanged() throws {
+        let url = repository.databaseURL
+
+        let first = try TrackingRepository.Reader(databaseURL: url, forceCopy: true)
+        XCTAssertNotEqual(first.path, url.path, "la lecture doit passer par une copie")
+        XCTAssertEqual(try first.recordCount(), 20)
+        first.discardTemporaryCopy()
+
+        let second = try TrackingRepository.Reader(databaseURL: url, forceCopy: true)
+        XCTAssertEqual(second.path, first.path, "la copie doit être réutilisée telle quelle")
+        XCTAssertEqual(try second.recordCount(), 20)
+    }
+
+    /// A source that changed must not be served from the previous copy, and that copy must
+    /// not be left behind in the temp directory.
+    func testTemporaryCopyIsRemadeWhenTheDatabaseChanges() throws {
+        let url = repository.databaseURL
+        let first = try TrackingRepository.Reader(databaseURL: url, forceCopy: true)
+        let stalePath = first.path
+        XCTAssertEqual(try first.recordCount(), 20)
+
+        // Bump the modification date explicitly: an insert alone can leave both the size
+        // and a coarse mtime unchanged, which would make the test prove nothing.
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: url.path)
+
+        let second = try TrackingRepository.Reader(databaseURL: url, forceCopy: true)
+        XCTAssertNotEqual(second.path, stalePath, "une base modifiée doit être recopiée")
+        XCTAssertEqual(try second.recordCount(), 20)
+
+        // The superseded copy survives one generation: a snapshot already in progress opens
+        // a fresh connection per query and must not find its file gone mid-read.
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: stalePath),
+            "la copie remplacée reste lisible une génération"
+        )
+        XCTAssertEqual(try first.recordCount(), 20, "le lecteur en cours continue de lire")
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(120)], ofItemAtPath: url.path)
+        let third = try TrackingRepository.Reader(databaseURL: url, forceCopy: true)
+        XCTAssertNotEqual(third.path, second.path)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: stalePath),
+            "deux générations plus tard, la copie est supprimée"
+        )
+    }
+
+    /// Two different databases never share a copy.
+    func testTemporaryCopyIsKeyedOnThePath() throws {
+        let first = try TrackingRepository.Reader(
+            databaseURL: repository.databaseURL, forceCopy: true)
+        let other = try Fixture.makeEmptyDatabase(in: makeTemporaryDirectory())
+        let second = try TrackingRepository.Reader(databaseURL: other, forceCopy: true)
+
+        XCTAssertNotEqual(second.path, first.path)
+        XCTAssertEqual(try second.recordCount(), 0)
     }
 
     // MARK: - Totals

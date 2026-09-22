@@ -7,8 +7,20 @@ import CockpitShared
 /// both are read, and assistant messages carrying a `message.id` are deduped across files.
 ///
 /// Transcripts are append-only, so each scan only reads the bytes appended since the last
-/// scan of a given file (tracked by byte offset + mtime). Call `reset()` to force a full
-/// re-read.
+/// scan of a given file (tracked by byte offset + mtime + size). Call `reset()` to force a
+/// full re-read.
+///
+/// ## Two caches, two rhythms
+/// The scanner runs every 30 s while Claude Code is active, so what it writes back matters.
+/// It keeps two files under `appSupportDir`:
+/// - `scan-cache.json` — resume state only (per file: offset, mtime, size) plus the session
+///   metadata. A few hundred kilobytes, rewritten at most once a minute.
+/// - `scan-events.json` — the parsed events, tens of megabytes on a busy machine, rewritten
+///   at most once every ten minutes.
+///
+/// Each file carries its own per-transcript offset and mtime, so the two can never desync:
+/// on load, a transcript whose events entry does not match its resume entry is simply
+/// re-read from byte zero.
 public actor TranscriptScanner {
     /// Everything a scan produces: the flat event list (for stats/charts/breakdowns) plus the
     /// session-level metadata collected along the way (for the sessions list).
@@ -23,20 +35,49 @@ public actor TranscriptScanner {
         public let bytesRead: Int
     }
 
-    private struct FileState: Codable {
+    /// In-memory state for one transcript. Deliberately **not** `Codable`: the events must
+    /// never be able to slip into the small resume cache by accident.
+    private struct FileState {
+        var offset: UInt64
+        var mtime: Date
+        /// Byte size at the last scan. Compared with the offset to tell "nothing appended"
+        /// from "a partial line is still waiting": a transcript caught mid-write has
+        /// `offset < size` forever, and comparing the offset with the size instead would
+        /// re-read that tail on every single pass.
+        var size: UInt64
+        var events: [UsageEvent]
+    }
+
+    /// Resume state for one transcript, as stored in `scan-cache.json`.
+    private struct PersistedFileState: Codable {
+        var offset: UInt64
+        var mtime: Date
+        var size: UInt64
+    }
+
+    /// The small file rewritten on the scan loop's rhythm.
+    private struct PersistedCache: Codable {
+        var fileStates: [String: PersistedFileState]
+        var sessionInfo: [String: SessionInfo]
+    }
+
+    /// One transcript's parsed events, stamped with the offset they cover.
+    private struct PersistedFileEvents: Codable {
         var offset: UInt64
         var mtime: Date
         var events: [UsageEvent]
     }
 
-    /// Everything persisted to disk between launches, so a relaunch doesn't have to re-read
-    /// every transcript from byte zero.
-    private struct PersistedCache: Codable {
-        var fileStates: [String: FileState]
-        var sessionInfo: [String: SessionInfo]
+    /// The big file, rewritten far more rarely.
+    private struct PersistedEvents: Codable {
+        var files: [String: PersistedFileEvents]
     }
 
     public let paths: ClaudePaths
+
+    /// How long between two writes of the resume cache, and of the events cache.
+    private let cachePersistInterval: TimeInterval
+    private let eventsPersistInterval: TimeInterval
 
     private var fileStates: [String: FileState] = [:]
     /// Keyed by sessionId. `ai-title`/`slug`/`cwd` don't appear on every line (unlike the
@@ -44,6 +85,8 @@ public actor TranscriptScanner {
     /// type, not just assistant turns.
     private var sessionInfoBySessionId: [String: SessionInfo] = [:]
     private var didLoadPersistedCache = false
+    private var lastCachePersist: Date?
+    private var lastEventsPersist: Date?
 
     private let isoWithFraction: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -57,21 +100,47 @@ public actor TranscriptScanner {
         return formatter
     }()
 
-    public init(paths: ClaudePaths = .live) {
+    /// - Parameters:
+    ///   - cachePersistInterval: minimum delay between two writes of the resume cache.
+    ///   - eventsPersistInterval: minimum delay between two writes of the events cache.
+    ///     Both are lowered in tests; `flush()` ignores them.
+    public init(
+        paths: ClaudePaths = .live,
+        cachePersistInterval: TimeInterval = 60,
+        eventsPersistInterval: TimeInterval = 600
+    ) {
         self.paths = paths
+        self.cachePersistInterval = cachePersistInterval
+        self.eventsPersistInterval = eventsPersistInterval
     }
 
     public var cacheFileURL: URL {
         paths.appSupportDir.appendingPathComponent("scan-cache.json")
     }
 
+    public var eventsCacheFileURL: URL {
+        paths.appSupportDir.appendingPathComponent("scan-events.json")
+    }
+
     /// Clears all cached offsets, forcing a full re-read of every transcript on the next scan.
-    /// Also drops the on-disk cache so a relaunch after a rescan doesn't reload stale data.
+    /// Also drops both on-disk caches so a relaunch after a rescan doesn't reload stale data.
     public func reset() {
         fileStates.removeAll()
         sessionInfoBySessionId.removeAll()
         didLoadPersistedCache = true
+        lastCachePersist = nil
+        lastEventsPersist = nil
         try? FileManager.default.removeItem(at: cacheFileURL)
+        try? FileManager.default.removeItem(at: eventsCacheFileURL)
+    }
+
+    /// Writes both caches right now, whatever the throttles say. Call it when the scanner is
+    /// being torn down; skipping it only costs a partial re-read on the next launch.
+    public func flush() {
+        // Before the first scan, `fileStates` is empty while a perfectly good cache sits on
+        // disk: writing now would replace it with nothing.
+        guard didLoadPersistedCache else { return }
+        persistIfNeeded(force: true)
     }
 
     /// Scans every `.jsonl` transcript and returns the full accumulated set of usage events
@@ -104,7 +173,7 @@ public actor TranscriptScanner {
         }
 
         if didChange {
-            persistCache()
+            persistIfNeeded(force: false)
         }
 
         return ScanResult(
@@ -134,30 +203,97 @@ public actor TranscriptScanner {
         return result
     }
 
-    /// Loads the on-disk cache (if any) once per instance, so the very first scan after launch
-    /// only has to read bytes appended since the app was last quit.
+    // MARK: - Persistence
+
+    /// Loads both on-disk caches (if any) once per instance, so the very first scan after
+    /// launch only has to read bytes appended since the app was last quit.
+    ///
+    /// A transcript whose events entry does not cover exactly the offset the resume entry
+    /// claims is dropped from the state entirely, which makes the next `scanFile` re-read it
+    /// from byte zero. That is how the two files' different write rhythms stay harmless.
     private func loadPersistedCacheIfNeeded() {
         guard !didLoadPersistedCache else { return }
         didLoadPersistedCache = true
         guard let data = try? Data(contentsOf: cacheFileURL),
               let persisted = try? JSONDecoder().decode(PersistedCache.self, from: data)
         else { return }
-        fileStates = persisted.fileStates
+
         sessionInfoBySessionId = persisted.sessionInfo
+
+        let storedEvents: [String: PersistedFileEvents] = {
+            guard let data = try? Data(contentsOf: eventsCacheFileURL),
+                  let decoded = try? JSONDecoder().decode(PersistedEvents.self, from: data)
+            else { return [:] }
+            return decoded.files
+        }()
+
+        for (path, state) in persisted.fileStates {
+            guard let events = storedEvents[path],
+                  events.offset == state.offset,
+                  events.mtime == state.mtime
+            else { continue }  // no usable events: re-read this transcript from byte zero
+            fileStates[path] = FileState(
+                offset: state.offset, mtime: state.mtime, size: state.size, events: events.events)
+        }
     }
 
-    private func persistCache() {
-        let payload = PersistedCache(fileStates: fileStates, sessionInfo: sessionInfoBySessionId)
-        guard let data = try? JSONEncoder().encode(payload) else { return }
+    /// Writes whichever cache is due. `force` bypasses both throttles.
+    private func persistIfNeeded(force: Bool) {
+        let now = Date()
+        if force || isDue(lastCachePersist, interval: cachePersistInterval, now: now) {
+            if writeResumeCache() { lastCachePersist = now }
+        }
+        if force || isDue(lastEventsPersist, interval: eventsPersistInterval, now: now) {
+            if writeEventsCache() { lastEventsPersist = now }
+        }
+    }
+
+    /// Never written yet, or the interval has elapsed.
+    private func isDue(_ last: Date?, interval: TimeInterval, now: Date) -> Bool {
+        guard let last else { return true }
+        return now.timeIntervalSince(last) >= interval
+    }
+
+    private func writeResumeCache() -> Bool {
+        var states: [String: PersistedFileState] = [:]
+        states.reserveCapacity(fileStates.count)
+        for (path, state) in fileStates {
+            states[path] = PersistedFileState(
+                offset: state.offset, mtime: state.mtime, size: state.size)
+        }
+        let payload = PersistedCache(fileStates: states, sessionInfo: sessionInfoBySessionId)
+        return write(payload, to: cacheFileURL)
+    }
+
+    private func writeEventsCache() -> Bool {
+        var files: [String: PersistedFileEvents] = [:]
+        files.reserveCapacity(fileStates.count)
+        for (path, state) in fileStates {
+            files[path] = PersistedFileEvents(
+                offset: state.offset, mtime: state.mtime, events: state.events)
+        }
+        return write(PersistedEvents(files: files), to: eventsCacheFileURL)
+    }
+
+    private func write<T: Encodable>(_ payload: T, to url: URL) -> Bool {
+        guard let data = try? JSONEncoder().encode(payload) else { return false }
         try? FileManager.default.createDirectory(
             at: paths.appSupportDir, withIntermediateDirectories: true)
-        try? data.write(to: cacheFileURL, options: .atomic)
+        do {
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
+    // MARK: - Scanning
+
     private struct FileOutcome {
-        /// Whether this file's cached state actually changed — callers skip writing the
-        /// persisted cache back to disk when nothing happened, the common case on a 30 s
-        /// auto-refresh with no new Claude Code activity.
+        /// Whether this file's cached state gained anything worth persisting — callers skip
+        /// writing the caches back when nothing happened, the common case on a 30 s
+        /// auto-refresh with no new Claude Code activity. A transcript caught mid-write
+        /// counts as unchanged: its offset did not move.
         var changed: Bool
         var events: [UsageEvent]
         var bytesRead: Int
@@ -170,7 +306,7 @@ public actor TranscriptScanner {
               let size = (attrs[.size] as? NSNumber)?.uint64Value
         else { return FileOutcome(changed: false, events: [], bytesRead: 0) }
 
-        if let existing = fileStates[path], existing.mtime == mtime, existing.offset == size {
+        if let existing = fileStates[path], existing.mtime == mtime, existing.size == size {
             return FileOutcome(changed: false, events: [], bytesRead: 0) // unchanged since last scan
         }
 
@@ -190,14 +326,18 @@ public actor TranscriptScanner {
         try? handle.seek(toOffset: startOffset)
 
         guard let chunk = try? handle.readToEnd(), !chunk.isEmpty else {
-            fileStates[path] = FileState(offset: startOffset, mtime: mtime, events: priorEvents)
-            return FileOutcome(changed: true, events: [], bytesRead: 0)
+            // Nothing past the offset; record the size so the next pass skips this file.
+            fileStates[path] = FileState(
+                offset: startOffset, mtime: mtime, size: size, events: priorEvents)
+            return FileOutcome(changed: false, events: [], bytesRead: 0)
         }
 
         guard let lastNewline = chunk.lastIndex(of: UInt8(ascii: "\n")) else {
-            // No complete line yet in this chunk (mid-write) — retry from the same offset later.
-            fileStates[path] = FileState(offset: startOffset, mtime: mtime, events: priorEvents)
-            return FileOutcome(changed: true, events: [], bytesRead: 0)
+            // No complete line yet in this chunk (mid-write) — retry from the same offset
+            // once the writer has appended more, which moves both mtime and size.
+            fileStates[path] = FileState(
+                offset: startOffset, mtime: mtime, size: size, events: priorEvents)
+            return FileOutcome(changed: false, events: [], bytesRead: 0)
         }
 
         let completeData = chunk[chunk.startIndex...lastNewline]
@@ -217,7 +357,7 @@ public actor TranscriptScanner {
         }
 
         fileStates[path] = FileState(
-            offset: newOffset, mtime: mtime, events: priorEvents + newEvents)
+            offset: newOffset, mtime: mtime, size: size, events: priorEvents + newEvents)
         return FileOutcome(changed: true, events: newEvents, bytesRead: completeData.count)
     }
 
