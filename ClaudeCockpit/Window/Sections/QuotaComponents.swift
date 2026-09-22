@@ -15,12 +15,17 @@ enum QuotaFormat {
             .joined(separator: " ")
     }
 
-    /// `Session en cours (5 h)`, `Tous modèles (7 jours)`, `Modèle Opus (7 jours)`
+    /// `nimbus_quill` → `Nimbus Quill / API`: the suffix says where the name comes from.
+    static func bucketName(_ meter: Meter) -> String {
+        prettyModel(meter.name) + " / API"
+    }
+
+    /// `Session en cours (5 h)`, `Tous modèles (7 jours)`, `Modèle Opus (7 jours)`, `Compartiment Nimbus Quill / API`
     static func label(for meter: Meter) -> String {
         if meter.isSession { return "Session en cours (5 h)" }
         if meter.name == "all" { return "Tous modèles (7 jours)" }
         if meter.isModelWindow { return "Modèle \(prettyModel(meter.name)) (7 jours)" }
-        return "Compartiment \(prettyModel(meter.name))"
+        return "Compartiment \(bucketName(meter))"
     }
 
     /// What an undocumented bucket is, in one line.

@@ -147,7 +147,7 @@ struct MenuBarPanelView: View {
                         label: "Autres compartiments",
                         value: FRFormat.integer(gauge.other.count),
                         note: gauge.other.map {
-                            "\(QuotaFormat.prettyModel($0.name)) \(FRFormat.percent($0.utilization, fraction: false))"
+                            "\(QuotaFormat.bucketName($0)) \(FRFormat.percent($0.utilization, fraction: false))"
                         }.joined(separator: ", ") + " — détail dans la fenêtre.")
                 }
             } else {
