@@ -17,13 +17,7 @@ public enum UsageAggregator {
         // the range filter.
         let unranged = allEvents.filter(filters.matchesModelAndProject)
 
-        let (start, end) = filters.range.bounds(now: now, calendar: calendar)
-        var filtered = unranged.filter { event in
-            if let start, event.timestamp < start { return false }
-            if let end, event.timestamp >= end { return false }
-            return true
-        }
-        filtered.sort { $0.timestamp < $1.timestamp }
+        let filtered = rangedEvents(unranged, range: filters.range, now: now, calendar: calendar)
 
         // MARK: Totals
 
@@ -153,7 +147,7 @@ public enum UsageAggregator {
             generatedAt: now,
             filters: filters,
             pricing: pricing,
-            filteredEvents: filtered,
+            filteredEventCount: filtered.count,
             totals: totals,
             daily: daily,
             costByFamily: costByFamily,
@@ -178,6 +172,25 @@ public enum UsageAggregator {
     }
 
     // MARK: - Helpers
+
+    /// Applies the range filter and sorts the survivors oldest first. Split out of
+    /// `snapshot(…)` so the ordering the series and breakdowns rely on stays directly
+    /// testable now that the snapshot only carries the filtered *count*.
+    static func rangedEvents(
+        _ events: [UsageEvent],
+        range: DateRangeFilter,
+        now: Date,
+        calendar: Calendar
+    ) -> [UsageEvent] {
+        let (start, end) = range.bounds(now: now, calendar: calendar)
+        var filtered = events.filter { event in
+            if let start, event.timestamp < start { return false }
+            if let end, event.timestamp >= end { return false }
+            return true
+        }
+        filtered.sort { $0.timestamp < $1.timestamp }
+        return filtered
+    }
 
     /// One breakdown key's running totals. A struct mutated in place through the dictionary's
     /// `default:` subscript, so no copy happens per event.

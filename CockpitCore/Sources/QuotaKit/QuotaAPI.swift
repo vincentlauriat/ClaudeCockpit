@@ -70,7 +70,10 @@ public struct QuotaAPI: QuotaFetching, Sendable {
 
         for (key, value) in root {
             guard let dict = value as? [String: Any],
-                  let utilization = number(dict["utilization"]) else { continue }
+                  let rawUtilization = number(dict["utilization"]),
+                  rawUtilization.isFinite, rawUtilization > -1, rawUtilization < 1_000_000 else { continue }
+            // Clamp to a sane percent range: the UI rounds this to an Int for the menu bar.
+            let utilization = min(max(rawUtilization, 0), 100_000)
             // `extra_usage` is a spend meter, not a rate-limit window — skip it.
             if key == "extra_usage" { continue }
             let resetsAt = (dict["resets_at"] as? String).flatMap(ISO8601Date.parse)

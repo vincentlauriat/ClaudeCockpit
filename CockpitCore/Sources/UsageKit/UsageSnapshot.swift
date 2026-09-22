@@ -8,8 +8,10 @@ public struct UsageSnapshot: Sendable {
     public let filters: UsageFilters
     public let pricing: PricingSettings
 
-    /// Events left after the model/project/range filters, newest last.
-    public let filteredEvents: [UsageEvent]
+    /// How many events survived the model/project/range filters. Only the count is kept:
+    /// the UI just needs to know whether the filtered set is empty, and retaining the whole
+    /// array would pin every event on the main actor for the snapshot's lifetime.
+    public let filteredEventCount: Int
     public let totals: UsageSummary
 
     public let daily: [DailyUsage]
@@ -48,7 +50,7 @@ public struct UsageSnapshot: Sendable {
         generatedAt: Date,
         filters: UsageFilters,
         pricing: PricingSettings,
-        filteredEvents: [UsageEvent],
+        filteredEventCount: Int,
         totals: UsageSummary,
         daily: [DailyUsage],
         costByFamily: [ModelCostRow],
@@ -74,7 +76,7 @@ public struct UsageSnapshot: Sendable {
         self.generatedAt = generatedAt
         self.filters = filters
         self.pricing = pricing
-        self.filteredEvents = filteredEvents
+        self.filteredEventCount = filteredEventCount
         self.totals = totals
         self.daily = daily
         self.costByFamily = costByFamily

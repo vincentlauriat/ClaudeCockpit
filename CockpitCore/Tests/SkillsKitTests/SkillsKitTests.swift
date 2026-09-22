@@ -260,6 +260,61 @@ final class SkillsKitTests: XCTestCase {
         XCTAssertEqual(roots.count, 2, "deux opérations doivent produire deux dossiers : \(roots)")
     }
 
+    /// `replaceItemAt` behaves differently on a file and on a directory; skills are
+    /// directories, agents and commands are flat `.md` files. Both must overwrite cleanly.
+    func testOverwritingAFlatResourceReplacesItAndBacksItUp() async throws {
+        let inventory = try await store.inventory()
+        let agent = try XCTUnwrap(inventory.resources.first { $0.name == "lib-agent" })
+
+        let copied = try await store.transfer(agent, to: .global, mode: .copy)
+        XCTAssertEqual(copied.contentURL.pathExtension, "md")
+        try "contenu écrasé\n".write(to: copied.url, atomically: true, encoding: .utf8)
+
+        let again = try await store.transfer(agent, to: .global, mode: .copy, overwrite: true)
+        XCTAssertEqual(
+            try String(contentsOf: again.contentURL, encoding: .utf8),
+            try String(contentsOf: agent.contentURL, encoding: .utf8),
+            "la source doit avoir remplacé la destination"
+        )
+        XCTAssertTrue(
+            fixture.backupEntries().contains { $0.hasSuffix("global/agents/lib-agent.md") },
+            "sauvegardes trouvées : \(fixture.backupEntries())"
+        )
+    }
+
+    /// A failing copy must not cost the user their existing resource: the destination is
+    /// only replaced once the copy succeeded, and the error names the backup.
+    func testFailedOverwriteKeepsTheDestinationAndNamesTheBackup() async throws {
+        let inventory = try await store.inventory()
+        let alpha = try XCTUnwrap(inventory.resources.first { $0.name == "alpha-skill" })
+        let existing = try await store.transfer(alpha, to: .library, mode: .copy)
+        let before = try String(contentsOf: existing.contentURL, encoding: .utf8)
+
+        let failing = ResourceStore(paths: fixture.paths, fileManager: FailingCopyFileManager())
+        await XCTAssertThrowsErrorAsync(
+            try await failing.transfer(alpha, to: .library, mode: .copy, overwrite: true)
+        ) { error in
+            guard case .ioAfterBackup(_, let backup) = error as? SkillsError else {
+                return XCTFail("attendu .ioAfterBackup, reçu \(error)")
+            }
+            XCTAssertTrue(fixture.exists(backup), "la sauvegarde doit exister : \(backup.path)")
+            XCTAssertTrue(
+                error.localizedDescription.contains(backup.path),
+                "le message doit citer la sauvegarde : \(error.localizedDescription)"
+            )
+        }
+
+        XCTAssertTrue(fixture.exists(existing.url), "l'original doit survivre à une copie ratée")
+        XCTAssertEqual(try String(contentsOf: existing.contentURL, encoding: .utf8), before)
+
+        let parent = existing.url.deletingLastPathComponent()
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: parent.path)
+        XCTAssertFalse(
+            leftovers.contains { $0.contains("cockpit-tmp") },
+            "aucun fichier temporaire ne doit rester : \(leftovers)"
+        )
+    }
+
     // MARK: - Plugin import
 
     func testImportPluginIntoLibrary() async throws {
@@ -380,5 +435,16 @@ private func XCTAssertThrowsErrorAsync<T>(
         XCTFail("une erreur était attendue", file: file, line: line)
     } catch {
         handler(error)
+    }
+}
+
+/// Fails exactly the copy `ResourceStore` makes onto its hidden temporary sibling, leaving
+/// the backup copy (which targets `~/.claude/backups`) working.
+private final class FailingCopyFileManager: FileManager, @unchecked Sendable {
+    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        guard !dstURL.lastPathComponent.contains("cockpit-tmp") else {
+            throw CocoaError(.fileWriteVolumeReadOnly)
+        }
+        try super.copyItem(at: srcURL, to: dstURL)
     }
 }

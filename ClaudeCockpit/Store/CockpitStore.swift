@@ -151,6 +151,10 @@ final class CockpitStore {
         guard !loopsStarted else { return }
         loopsStarted = true
 
+        // Housekeeping: drop skill backups older than 30 days (off the main thread).
+        let paths = paths
+        Task.detached(priority: .background) { BackupPruner.prune(paths: paths) }
+
         loopTasks.append(Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshUsage()
@@ -164,13 +168,7 @@ final class CockpitStore {
                 try? await Task.sleep(for: .seconds(180))
             }
         })
-        loopTasks.append(Task { [weak self] in
-            await self?.refreshRTK()
-            guard let stream = self?.rtkService.changes else { return }
-            for await _ in stream {
-                await self?.refreshRTK()
-            }
-        })
+        startRTKWatch()
         loopTasks.append(Task { [weak self] in
             // Fallback poll for rtk in case the watcher stream ended (no DB at launch).
             while !Task.isCancelled {
@@ -194,6 +192,26 @@ final class CockpitStore {
         })
     }
     private var skillsWatcher: DirectoryWatcher?
+
+    /// The task consuming `rtkService.changes`, kept apart from `loopTasks` because it is
+    /// bound to one `RTKService` instance: when the user changes the database path a new
+    /// service replaces it and this task has to be cancelled and restarted, or nobody
+    /// subscribes to the new service's stream.
+    private var rtkWatchTask: Task<Void, Never>?
+
+    private func startRTKWatch() {
+        rtkWatchTask?.cancel()
+        // Captured now, so the loop can never end up awaiting a stream from a service the
+        // store has since replaced.
+        let service = rtkService
+        rtkWatchTask = Task { [weak self] in
+            await self?.refreshRTK()
+            for await _ in service.changes {
+                if Task.isCancelled { return }
+                await self?.refreshRTK()
+            }
+        }
+    }
 
     func refreshAll() async {
         async let a: Void = refreshUsage()
@@ -257,12 +275,17 @@ final class CockpitStore {
 
     /// Re-resolves the rtk database after the user changed the path setting.
     func rtkPathDidChange() {
+        // Cancel before stopping the old service: `stop()` finishes its stream, and the
+        // loop must not race a refresh against the service it is about to lose.
+        rtkWatchTask?.cancel()
+        rtkWatchTask = nil
         rtkService.stop()
         let raw = defaults.string(forKey: SettingsKey.rtkDBPath) ?? ""
         let override = raw.isEmpty ? nil : URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
         rtkService = RTKService(paths: paths, overridePath: override)
         rtk = nil
-        Task { await refreshRTK() }
+        // Refreshes once and re-subscribes, this time to the new service.
+        startRTKWatch()
     }
     var rtkDatabaseURL: URL? { rtkService.databaseURL }
 
@@ -274,11 +297,35 @@ final class CockpitStore {
         return lines.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath, isDirectory: true) }
     }
 
+    private static let projectsCacheKey = "cache.projects"
+
+    /// Projects found by the last scan, persisted so the first inventory after
+    /// launch does not wait for a directory walk.
+    private var cachedProjects: [ProjectRef] {
+        get {
+            guard let data = defaults.data(forKey: Self.projectsCacheKey),
+                  let list = try? JSONDecoder().decode([ProjectRef].self, from: data) else { return [] }
+            return list.filter { FileManager.default.fileExists(atPath: $0.claudeDir.path) }
+        }
+        set { defaults.set(try? JSONEncoder().encode(newValue), forKey: Self.projectsCacheKey) }
+    }
+
     func refreshSkills() async {
         if skills == nil { skillsState = .loading }
-        let roots = projectRoots
         do {
+            // 1. Fast path: inventory with the cached project list.
+            if skills == nil {
+                let cached = cachedProjects
+                if !cached.isEmpty {
+                    let quick = try await skillsStore.inventory(projects: cached)
+                    skills = quick
+                    skillsState = .ready(quick.generatedAt)
+                }
+            }
+            // 2. Full path: rescan roots (bounded walk) then rebuild the inventory.
+            let roots = projectRoots
             let projects = await Task.detached(priority: .utility) { ProjectScanner().scan(roots: roots) }.value
+            cachedProjects = projects
             let inventory = try await skillsStore.inventory(projects: projects)
             skills = inventory
             skillsState = .ready(inventory.generatedAt)
@@ -336,11 +383,15 @@ final class CockpitStore {
 
     /// Opens (or focuses) the main window and brings the app forward.
     func openMainWindow() {
+        if NSApp.activationPolicy() == .accessory {
+            // Menu-bar-only mode: the window still needs a reachable app to show up.
+            NSApp.setActivationPolicy(.regular)
+        }
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue.contains(MainWindowView.windowID) == true || $0.title == "Claude Cockpit" }) {
+        if let handler = openWindowHandler {
+            handler()
+        } else if let window = NSApp.windows.first(where: { $0.title == "Claude Cockpit" }) {
             window.makeKeyAndOrderFront(nil)
-        } else {
-            openWindowHandler?()
         }
     }
     /// Injected by the App scene (SwiftUI `openWindow` action).

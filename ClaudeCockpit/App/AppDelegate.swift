@@ -4,6 +4,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menuBarOnly = UserDefaults.standard.bool(forKey: SettingsKey.menuBarOnly)
         NSApp.setActivationPolicy(menuBarOnly ? .accessory : .regular)
+        if menuBarOnly {
+            // Menu-bar-only mode: the main window must not pop at launch.
+            DispatchQueue.main.async {
+                NSApp.windows.filter { $0.title == "Claude Cockpit" }.forEach { $0.close() }
+            }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
