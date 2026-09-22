@@ -124,8 +124,10 @@ rabat sur `~/.claude/.credentials.json`. Les deux formes sont acceptées, envelo
 n'est jamais persisté ni journalisé par l'application.
 
 `QuotaAPI` émet un seul `GET https://api.anthropic.com/api/oauth/usage` et analyse les compteurs
-en un `GaugeSnapshot` : le compteur de session sur cinq heures, celui sur sept jours, et un
-compteur par famille de modèle. `UsageMath.projection(for:now:)` transforme un compteur en
+en un `GaugeSnapshot` : le compteur de session sur cinq heures, celui sur sept jours, un
+compteur par famille de modèle (clés `seven_day_<modèle>` uniquement) et, dans `other`, les
+compartiments non documentés que l'endpoint renvoie aussi (`nimbus_quill`, …), pour que
+l'interface les affiche sans les présenter comme des modèles. `UsageMath.projection(for:now:)` transforme un compteur en
 `PaceProjection` — où atterrit le rythme actuel à la réinitialisation, le rythme effectivement
 suivi, celui qui ferait atterrir exactement sur 100, et la part quotidienne égale de ce qui
 reste.

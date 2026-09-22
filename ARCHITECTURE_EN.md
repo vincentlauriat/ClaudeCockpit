@@ -117,8 +117,9 @@ shapes are accepted, wrapped in `claudeAiOauth` or bare, and an expired token is
 such rather than sent. The token is never persisted or logged by the app.
 
 `QuotaAPI` issues one `GET https://api.anthropic.com/api/oauth/usage` and parses the meters into
-a `GaugeSnapshot`: the five-hour session meter, the seven-day meter, and one meter per model
-family. `UsageMath.projection(for:now:)` turns a meter into a `PaceProjection` — where the
+a `GaugeSnapshot`: the five-hour session meter, the seven-day meter, one meter per model
+family (`seven_day_<model>` keys only), and, in `other`, the undocumented buckets the endpoint
+also reports (`nimbus_quill`, …) so the UI can show them without presenting them as models. `UsageMath.projection(for:now:)` turns a meter into a `PaceProjection` — where the
 current rate lands at reset, the rate you are running at, the rate that would land exactly on
 100, and the even daily share of what is left.
 
