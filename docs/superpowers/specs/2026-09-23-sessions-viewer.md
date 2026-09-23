@@ -27,8 +27,10 @@ compaction with `compactMetadata`), `attachment`, `ai-title`, `pr-link`, `cost-s
 `attributionSkill`, `attributionAgent`, `toolUseResult` (structured result on the user
 line that carries a `tool_result`).
 
-Corpus today: see `du` in PLAN notes (≈1k transcripts). Sessions can exceed 50 MB, so the
-viewer must page messages and must not hold every session in memory.
+Corpus measured on 2026-09-23: **901 MB, 947 transcripts** of which 574 are sub-agent files,
+largest single session 35 MB. The viewer must page messages and must never hold a whole
+session, let alone the corpus, in memory. The 35 MB session is the benchmark case for the
+detail view.
 
 ## Architecture
 
@@ -38,7 +40,22 @@ other kits: actor service, immutable `Sendable` snapshots, tests on fixtures.
 ### Storage: `sessions.db` (SQLite, in `~/Library/Application Support/ClaudeCockpit/`)
 
 Why SQLite: FTS5 search across all messages and tool output, lazy paging of huge sessions,
-and derived feeds (recent edits, heatmap) as plain queries. macOS' system SQLite ships FTS5.
+and derived feeds (recent edits, heatmap) as plain queries. macOS' system SQLite ships FTS5
+(verified: 3.53.3).
+
+**The index stores references, not the archive.** The corpus is 901 MB / 947 transcripts;
+copying every block body into the database plus an FTS index would produce a 1.5–2.5 GB file
+in Application Support — the same write-amplification mistake as the 24 MB scan cache, one
+order of magnitude up. So `blocks` holds `(file_id, byte_offset, byte_len)` and the display
+text is read back from the JSONL on demand; transcripts are append-only, so offsets stay
+valid. Only a ≤200-character `text_preview` per message is denormalised for the list.
+FTS5 is fed selectively: user/assistant text, thinking, tool *inputs*, and the first 8 KB of
+each tool *output*. **Budget: `sessions.db` must stay under 300 MB for this corpus.**
+
+Noise lines are not indexed at all: `attachment` (13 150 lines against 2 469 user and 4 714
+assistant ones in a 40-file probe), `queue-operation`, `atis-latch`, `mode`,
+`permission-mode`, `last-prompt`, `file-history-*`. Attachments survive as a count on the
+parent message. `system` lines are kept (compaction, hooks) but stay out of FTS.
 
 Tables (all keyed by stable ids, rebuildable from the transcripts at any time):
 
@@ -56,14 +73,20 @@ Tables (all keyed by stable ids, rebuildable from the transcripts at any time):
 - `edits(id PK, session_id, message_uuid, ts, tool[Edit|Write|MultiEdit|NotebookEdit],
   path, lines_added, lines_removed)` — from `tool_use` inputs of file tools.
 - `pr_links(session_id, number, url, repo, ts)`.
-- `subagents(agent_id PK, session_id, parent_tool_use_id, file_path)` — link a
-  `subagents/agent-*.jsonl` to the `Agent` tool call that spawned it (matched by agent id
-  found in the tool result / `toolUseResult`).
+- `subagents(agent_id PK, session_id, parent_tool_use_id, file_path)`. The parent session
+  is free: the real layout is `…/projects/<encoded>/<parentSessionId>/subagents/agent-*.jsonl`,
+  so the parent is the containing directory name — no tool-result parsing. Only the finer
+  join "this specific `Agent` tool_use ↔ this agent file" needs the id; when it is ambiguous,
+  degrade to listing the session's sub-agent transcripts as expandable children instead of
+  failing inline expansion.
 - `messages_fts` (FTS5, content = messages text + tool bodies, tokenizer unicode61).
 
 ### Services
 
 - `TranscriptParser` (pure, tested): `Data` line → `ParsedLine` enum.
+- Indexing runs on its own timer, staggered against UsageKit's 30 s scan so the two do not
+  walk the same 900 MB on the same tick. Consolidating them (Usage reading `sessions.db`) is
+  deliberately out of 1.1.0.
 - `SessionIndexer` actor: walks the tree incrementally (offset/mtime/size like UsageKit),
   parses appended lines, upserts rows in one transaction per file, updates session
   aggregates and FTS. First index of ≈1 GB must stay under a few minutes and never block the
@@ -77,12 +100,21 @@ Tables (all keyed by stable ids, rebuildable from the transcripts at any time):
   Evidence list returned with the grade.
 - `SessionExporter`: Markdown and self-contained HTML of one session (tool calls collapsed
   with `<details>`).
-- `SessionActions` (app side): resume in Terminal (`claude --resume <id>` run in the
-  session's cwd, via `open -a Terminal` + a temp `.command` script), reveal transcript in
-  Finder, copy id, star, rename, hide (soft delete, transcripts are never touched).
-- Live follow: `DirectoryWatcher` on `~/.claude/projects` → indexer tick (debounced 1 s) →
-  store publishes "session X changed"; an open session auto-appends and shows a "live"
-  badge when its file changed within the last 2 minutes.
+- `SessionActions` (app side): resume in Terminal, reveal transcript in Finder, copy id,
+  star, rename, hide (soft delete, transcripts are never touched). Resume runs
+  `claude --resume <session-id>` from the session's `cwd` through a temp `.command` script
+  opened with Terminal; the flag was verified against the installed binary
+  (`-r, --resume [value]  Resume a conversation by session ID`). If the id no longer
+  resolves, Claude Code shows its own picker — acceptable. The button is disabled when the
+  session's `cwd` no longer exists.
+- Live follow: **FSEvents, recursive**, on `~/.claude/projects` → indexer tick (debounced
+  1 s) → store publishes "session X changed"; an open session auto-appends and shows a
+  "live" badge when its file changed within the last 2 minutes.
+  `CockpitShared.DirectoryWatcher` cannot be used here: it is documented as non-recursive,
+  and an experiment on 2026-09-23 confirmed a `DispatchSource` armed on the root does **not**
+  fire when a line is appended to `<project>/<session>.jsonl`, while an `FSEventStream` with
+  `kFSEventStreamCreateFlagFileEvents` does. Generalise the proven FSEvents code in
+  `RTKKit/DBWatcher.swift` into a shared recursive watcher rather than writing a new one.
 
 ## UI
 
@@ -128,6 +160,10 @@ Other agents' transcripts, daemon/REST/MCP, Postgres/ClickHouse/DuckDB, semantic
 chat imports, Recall/LLM insights, Gist publishing, multi-machine sync, secret scanning.
 
 ## Testing
+
+Verification must include the **real corpus**, not only fixtures: a green fixture suite said
+nothing about the pathological project scanner in 1.0.0. Benchmark the full index and the
+35 MB session in the detail view before calling the phase done.
 
 Fixtures: hand-written JSONL sessions covering text/thinking/tool pairs, an Edit diff, an
 Agent call with its subagent file, a compaction boundary, an API error, and a truncated
