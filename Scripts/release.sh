@@ -51,6 +51,23 @@ DMG="$RELEASE_DIR/$DMG_SLUG-$VERSION.dmg"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Vincent LAURIAT (KFLACS69T9)}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-AppliMacVincentGithub}"
 BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
+# A squash merge collapses a feature branch into a single commit, so the commit
+# count can go DOWN from one release to the next: 1.1.0 shipped as build 44 from
+# a 44-commit branch, and main was back to 29 right after the merge. Sparkle
+# compares sparkle:version numerically and silently refuses an update whose build
+# is not higher, so never emit a number at or below the one already published.
+# The committed appcast is the record of what shipped; the working copy may have
+# just been overwritten by a previous run of this script.
+PUBLISHED="$(git show HEAD:appcast.xml 2>/dev/null | python3 -c "
+import sys, re
+text = sys.stdin.read()
+builds = [int(n) for n in re.findall(r'<sparkle:version>\s*(\d+)\s*</sparkle:version>', text)]
+print(max(builds) if builds else 0)
+" 2>/dev/null || echo 0)"
+if [ -n "$PUBLISHED" ] && [ "$BUILD_NUMBER" -le "$PUBLISHED" ]; then
+  echo "▶︎ commit count $BUILD_NUMBER is not above published build $PUBLISHED (squash merge); using $((PUBLISHED + 1))"
+  BUILD_NUMBER=$((PUBLISHED + 1))
+fi
 
 echo "▶︎ Releasing $APP_NAME $VERSION (build $BUILD_NUMBER)"
 
