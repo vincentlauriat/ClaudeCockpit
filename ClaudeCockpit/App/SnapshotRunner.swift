@@ -18,9 +18,17 @@ enum SnapshotRunner {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // Let the data sources settle (transcripts, rtk, skills, quota).
         try? await Task.sleep(for: .seconds(8))
+        // The sessions index is the slow one: a first pass reads the whole archive.
+        // Waiting on the flag rather than on a fixed delay keeps the shots meaningful
+        // on a cold machine without padding every run on a warm one.
+        let indexDeadline = Date().addingTimeInterval(180)
+        while store.sessionIndex.isRunning, Date() < indexDeadline {
+            try? await Task.sleep(for: .seconds(1))
+        }
 
         let sections: [(CockpitSection, String)] = [
-            (.overview, "overview"), (.usage, "usage"), (.quotas, "quotas"), (.rtk, "rtk"),
+            (.overview, "overview"), (.usage, "usage"), (.sessions, "sessions"),
+            (.quotas, "quotas"), (.rtk, "rtk"),
             (.skills, "skills"), (.agents, "agents"), (.commands, "commands"), (.settings, "settings"),
         ]
         for (section, name) in sections {
@@ -28,6 +36,17 @@ enum SnapshotRunner {
             try? await Task.sleep(for: .seconds(1.5))
             if let window = NSApp.windows.first(where: { $0.title == "Claude Cockpit" && $0.isVisible }) {
                 write(window, to: dir.appendingPathComponent("\(name).png"))
+            }
+            // The sessions section has three tabs behind one sidebar item.
+            if section == .sessions {
+                for (tab, tabName) in [("activity", "sessions-activity"), ("edits", "sessions-edits")] {
+                    UserDefaults.standard.set(tab, forKey: "sessions.tab")
+                    try? await Task.sleep(for: .seconds(1.5))
+                    if let window = NSApp.windows.first(where: { $0.title == "Claude Cockpit" && $0.isVisible }) {
+                        write(window, to: dir.appendingPathComponent("\(tabName).png"))
+                    }
+                }
+                UserDefaults.standard.set("browser", forKey: "sessions.tab")
             }
         }
 

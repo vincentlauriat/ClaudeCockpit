@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "QuotaKit", targets: ["QuotaKit"]),
         .library(name: "RTKKit", targets: ["RTKKit"]),
         .library(name: "SkillsKit", targets: ["SkillsKit"]),
+        .library(name: "SessionsKit", targets: ["SessionsKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.16.0"),
@@ -20,10 +21,14 @@ let package = Package(
         .target(name: "QuotaKit", dependencies: ["CockpitShared"]),
         .target(name: "RTKKit", dependencies: ["CockpitShared", .product(name: "SQLite", package: "SQLite.swift")]),
         .target(name: "SkillsKit", dependencies: ["CockpitShared"]),
+        .target(
+            name: "SessionsKit",
+            dependencies: ["CockpitShared", .product(name: "SQLite", package: "SQLite.swift")]),
         .testTarget(name: "CockpitSharedTests", dependencies: ["CockpitShared"]),
         .testTarget(name: "UsageKitTests", dependencies: ["UsageKit"]),
         .testTarget(name: "QuotaKitTests", dependencies: ["QuotaKit"]),
         .testTarget(name: "RTKKitTests", dependencies: ["RTKKit"]),
         .testTarget(name: "SkillsKitTests", dependencies: ["SkillsKit"]),
+        .testTarget(name: "SessionsKitTests", dependencies: ["SessionsKit"]),
     ]
 )
