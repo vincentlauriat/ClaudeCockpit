@@ -155,8 +155,12 @@ struct SessionDetailView: View {
             SessionChip(
                 title: "Cache \(FRFormat.tokens(session.cacheReadTokens + session.cacheCreationTokens))",
                 tint: Theme.blue)
-            if let cost = session.costStateUSD {
-                SessionChip(title: store.money(cost), systemImage: "eurosign.circle", active: true, tint: Theme.blue)
+            if let cost = store.sessionCost(session) {
+                // Estimated from the per-model tokens when the transcript carries
+                // no recorded total; the tilde keeps the two apart.
+                SessionChip(
+                    title: cost.estimated ? "~\(store.money(cost.usd))" : store.money(cost.usd),
+                    systemImage: "eurosign.circle", active: true, tint: Theme.blue)
             }
             SessionChip(title: FRFormat.plural(session.toolCalls, "outil"), systemImage: "wrench.and.screwdriver")
             if session.toolErrors > 0 {

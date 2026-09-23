@@ -36,7 +36,8 @@ with the lines added and removed.
 - Sub-agent transcripts are indexed as sessions of their own and hidden from the list by
   default; 96.5% are linked back to the call that spawned them.
 - Cost is estimated from per-model tokens using the pricing you set, so it is available for
-  the 980 sessions Claude Code never wrote a cost line for, not just the 106 it did.
+  the 980 sessions Claude Code never wrote a cost line for, not just the 106 it did. An
+  estimate is prefixed with `~`, so it is never mistaken for a figure read from the transcript.
 
 ### Privacy
 Unchanged: everything is read locally, `~/.claude` is never written to, and the only network

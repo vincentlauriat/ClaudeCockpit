@@ -508,8 +508,10 @@ private struct SessionRowView: View {
                 Text("\(FRFormat.integer(session.toolErrors)) err.").foregroundStyle(.red)
             }
             Spacer(minLength: 4)
-            Text(session.costStateUSD.map { store.money($0) } ?? "–")
-                .foregroundStyle(session.costStateUSD == nil ? Theme.mist : Theme.blue)
+            // `~` marks a cost priced from tokens rather than read from the
+            // transcript, so an estimate never passes for a measured figure.
+            Text(store.sessionCost(session).map { $0.estimated ? "~\(store.money($0.usd))" : store.money($0.usd) } ?? "–")
+                .foregroundStyle(store.sessionCost(session) == nil ? Theme.mist : Theme.blue)
         }
         .font(.system(size: 10))
         .monospacedDigit()

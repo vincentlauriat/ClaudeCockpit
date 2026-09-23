@@ -149,11 +149,12 @@ struct OverviewView: View {
 
     // MARK: Sessions today
 
-    /// Sum of the costs the transcripts actually recorded, plus how many sessions
-    /// carried no `cost-state` line at all. A missing cost is not zero.
+    /// Recorded cost where the transcript has one, priced from the per-model
+    /// tokens everywhere else, and a count of the sessions that offer neither.
+    /// A missing cost is never counted as zero.
     private var todayCost: (total: Double, missing: Int) {
         todaySessions.reduce(into: (total: 0.0, missing: 0)) { result, session in
-            if let cost = session.costStateUSD { result.total += cost } else { result.missing += 1 }
+            if let cost = store.sessionCost(session) { result.total += cost.usd } else { result.missing += 1 }
         }
     }
 

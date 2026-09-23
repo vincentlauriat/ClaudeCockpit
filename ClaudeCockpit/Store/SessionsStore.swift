@@ -13,6 +13,27 @@ extension CockpitStore {
     /// Incremental by default: only transcripts whose size or mtime moved are read.
     /// `full` drops the database and rebuilds it, which is the "Reconstruire l'index"
     /// button and the only way to recover from a corrupted file.
+    /// What a session cost, and whether that number was measured or estimated.
+    ///
+    /// Claude Code writes a `cost-state` line for only about one session in ten.
+    /// For the rest the per-model token counts are priced with the rates from
+    /// Settings, exactly as the Usage section does, so the column stops being
+    /// empty on the longest sessions. The two are never silently mixed: an
+    /// estimate is flagged and the view marks it.
+    func sessionCost(_ session: SessionRef) -> (usd: Double, estimated: Bool)? {
+        if let recorded = session.costStateUSD { return (recorded, false) }
+        guard !session.tokensByModel.isEmpty else { return nil }
+        let total = session.tokensByModel.reduce(0.0) { sum, entry in
+            let rate = pricing.pricing(forModel: entry.key)
+            return sum + rate.cost(
+                inputTokens: entry.value.inputTokens,
+                outputTokens: entry.value.outputTokens,
+                cacheCreationTokens: entry.value.cacheCreationTokens,
+                cacheReadTokens: entry.value.cacheReadTokens)
+        }
+        return (total, true)
+    }
+
     /// How long a deleted transcript may linger before a complete walk removes it.
     static let fullWalkInterval: TimeInterval = 300
 
