@@ -68,8 +68,10 @@ Tables (all keyed by stable ids, rebuildable from the transcripts at any time):
   is_sidechain, is_meta, is_compact_boundary, is_api_error, model, input_tokens,
   output_tokens, cache_read, cache_create, text_preview)`.
 - `blocks(id PK, message_uuid, idx, kind[text|thinking|tool_use|tool_result|image],
-  tool_name, tool_use_id, is_error, body TEXT, meta JSON)` — `body` holds text, thinking,
-  tool input (pretty JSON) or tool output; images store only media type + byte size.
+  tool_name, tool_use_id, is_error, file_id, byte_offset, byte_len, meta JSON)` — no body:
+  the display text is re-read from the transcript at `byte_offset`/`byte_len` on demand (see
+  the storage rule above). `meta` carries the small structured extras (file edit paths and
+  line counts, image media type and byte size, sub-agent id).
 - `edits(id PK, session_id, message_uuid, ts, tool[Edit|Write|MultiEdit|NotebookEdit],
   path, lines_added, lines_removed)` — from `tool_use` inputs of file tools.
 - `pr_links(session_id, number, url, repo, ts)`.
