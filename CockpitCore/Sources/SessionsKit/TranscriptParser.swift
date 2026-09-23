@@ -85,15 +85,19 @@ public struct ParsedBlock: Sendable {
 /// that change between Claude Code releases and must not break the parse.
 public struct TranscriptParser: Sendable {
 
-    /// The only `attachment` kinds that are a file the user attached. Everything else under
-    /// that line type is Claude Code's own plumbing — hook output, token reminders, the date,
-    /// the skill listing — and amounts to 99,76 % of them: 112 015 attachment lines in the
-    /// real archive, of which 273 are files. Counting the rest put a phantom "1 pièce jointe"
-    /// on nearly every user turn.
+    /// The only `attachment` kinds that name a file. Everything else under that line type is
+    /// Claude Code's own plumbing — hook output, token reminders, the date, the skill listing
+    /// — and amounts to 99,8 % of them: 112 015 attachment lines in the real archive, of which
+    /// 412 name a file. Counting the rest put a phantom "1 pièce jointe" on nearly every turn.
     ///
-    /// The list is deliberately an allow-list: a kind Claude Code adds tomorrow is ignored
-    /// rather than counted.
-    static let fileAttachmentTypes = ["file", "edited_text_file", "compact_file_reference"]
+    /// `edited_text_file` is deliberately absent although it names a file: it is the notice
+    /// that a file changed on disk, not something anyone attached. Over the whole archive 196
+    /// of its 205 occurrences land on a line whose only content is a `tool_result`, which is
+    /// Claude Code bringing a tool's answer back. Do not add it back thinking it was forgotten.
+    ///
+    /// The list is an allow-list: a kind Claude Code adds tomorrow is ignored rather than
+    /// counted, so the defect stays closed by construction.
+    static let fileAttachmentTypes = ["file", "compact_file_reference"]
 
     /// Line types that never reach the UI. Recognised on the raw bytes so a 200 KB hook
     /// payload is never handed to `JSONSerialization` — `attachment` alone is the most
@@ -365,8 +369,8 @@ public struct TranscriptParser: Sendable {
     static func isAgentTool(_ name: String) -> Bool { name == "Agent" || name == "Task" }
 
     /// What to show for an attached file: the path relative to the project when the line
-    /// carries one, otherwise the file's own name. `edited_text_file` has no `displayPath`,
-    /// and a full absolute path is too long to sit in a turn header.
+    /// carries one, otherwise the file's own name, since a full absolute path is too long to
+    /// sit in a turn header. Both allowed kinds carry `displayPath`; the fallback is defensive.
     static func attachmentName(_ attachment: [String: Any]) -> String? {
         if let display = (attachment["displayPath"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines), !display.isEmpty {

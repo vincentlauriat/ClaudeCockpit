@@ -66,8 +66,10 @@ final class SessionIndexerTests: XCTestCase {
         // Hook output rides on the same line type as a real attachment and must not show up.
         XCTAssertEqual(try XCTUnwrap(byId["u2"]).attachments, [])
         // Real files do, named, on the turn they were attached to.
-        XCTAssertEqual(try XCTUnwrap(byId["u1"]).attachments, ["internal/api.go", "TODO.md"])
-        XCTAssertEqual(try XCTUnwrap(byId["u1"]).attachmentCount, 2)
+        // `edited_text_file` names a file and is still plumbing: it says a file changed on
+        // disk, so it is absent from the turn.
+        XCTAssertEqual(try XCTUnwrap(byId["u1"]).attachments, ["internal/api.go"])
+        XCTAssertEqual(try XCTUnwrap(byId["u1"]).attachmentCount, 1)
 
         XCTAssertTrue(try XCTUnwrap(byId["s1"]).isCompactBoundary)
         XCTAssertEqual(try XCTUnwrap(byId["s1"]).systemSubtype, "compact_boundary")
@@ -111,9 +113,13 @@ final class SessionIndexerTests: XCTestCase {
     }
 
     /// A `user` line carrying only a `tool_result` is written by Claude Code to bring an
-    /// answer back, never by someone attaching a file — and the `edited_text_file` that
-    /// follows one records what the *agent* just edited. Hanging it there produced a bubble
-    /// saying nothing but "1 pièce jointe": 107 of the archive's 273 file attachments.
+    /// answer back, never by someone attaching a file. Hanging a file on it produced a bubble
+    /// saying nothing but "1 pièce jointe".
+    ///
+    /// The kind here is an *allowed* one on purpose: dropping `edited_text_file` from the
+    /// allow-list already removes most of these, so only an allowed kind still exercises the
+    /// rule. The real archive has five such cases, all one burst of files re-injected after a
+    /// compaction, which is context being restored rather than anything Vincent attached.
     func testAFileRecordedAfterAToolResultIsNotTheUsersAttachment() async throws {
         try fixture.write([
             Line.user(uuid: "t-u1", text: "modifie le fichier", at: TestClock.offset(0),
@@ -125,9 +131,11 @@ final class SessionIndexerTests: XCTestCase {
             ], messageId: "msg-t1", sessionId: "sess-tool"),
             Line.toolResult(uuid: "t-u2", at: TestClock.offset(2), toolUseId: "t-t1",
                             text: "Edit applied", sessionId: "sess-tool"),
-            // Claude Code notes what it just edited, right after the tool's answer.
-            Line.fileAttachment(parentUuid: "t-u2", kind: "edited_text_file",
-                                filename: "/x/store.py", sessionId: "sess-tool"),
+            // A file re-injected right after the tool's answer, on a line with no turn of
+            // its own.
+            Line.fileAttachment(parentUuid: "t-u2", kind: "compact_file_reference",
+                                filename: "/x/store.py", displayPath: "store.py",
+                                sessionId: "sess-tool"),
         ], to: "\(Line.project)/sess-tool.jsonl")
 
         let service = fixture.service()
@@ -141,6 +149,46 @@ final class SessionIndexerTests: XCTestCase {
             !$0.attachments.isEmpty && !$0.blocks.contains { $0.kind != .toolResult }
         }
         XCTAssertEqual(bare, [], "aucune bulle « Vous » réduite à une pièce jointe")
+    }
+
+    /// Files re-injected after a compaction are context being restored, not a gesture by the
+    /// user. Over the whole archive that is every attachment there is: 187 on a compaction
+    /// resume, 15 on the CLI's own echo of `/compact`, none on a typed prompt.
+    ///
+    /// The second half is the guard rail: a file dropped on a real prompt must still show, so
+    /// this test fails if the filter ever becomes a blanket "hide every attachment".
+    func testFilesRestoredByACompactionAreHiddenButATypedPromptKeepsItsAttachment() async throws {
+        try fixture.write([
+            Line.compactSummary(uuid: "k-u1", at: TestClock.offset(0), sessionId: "sess-compact"),
+            Line.fileAttachment(parentUuid: "k-u1", kind: "compact_file_reference",
+                                filename: "/x/restored.swift", displayPath: "restored.swift",
+                                sessionId: "sess-compact"),
+            // The CLI printing the result of `/compact`, which nobody typed either.
+            Line.user(uuid: "k-u2", text: "<local-command-stdout>Compacted (ctrl+o…)",
+                      at: TestClock.offset(1), sessionId: "sess-compact"),
+            Line.fileAttachment(parentUuid: "k-u2", kind: "file",
+                                filename: "/x/echoed.swift", displayPath: "echoed.swift",
+                                sessionId: "sess-compact"),
+            // A prompt someone actually typed, with a file dropped on it.
+            Line.user(uuid: "k-u3", text: "Regarde ce fichier",
+                      at: TestClock.offset(2), sessionId: "sess-compact"),
+            Line.fileAttachment(parentUuid: "k-u3", kind: "file",
+                                filename: "/x/joint.swift", displayPath: "joint.swift",
+                                sessionId: "sess-compact"),
+        ], to: "\(Line.project)/sess-compact.jsonl")
+
+        let service = fixture.service()
+        try await service.index()
+        let byId = Dictionary(uniqueKeysWithValues:
+            try await service.messages(sessionId: "sess-compact", includeMeta: true)
+                .map { ($0.id, $0) })
+
+        XCTAssertEqual(try XCTUnwrap(byId["k-u1"]).attachments, [],
+                       "un fichier réinjecté par une compaction n'est pas une pièce jointe")
+        XCTAssertEqual(try XCTUnwrap(byId["k-u2"]).attachments, [],
+                       "la sortie du /compact n'est pas un tour tapé")
+        XCTAssertEqual(try XCTUnwrap(byId["k-u3"]).attachments, ["joint.swift"],
+                       "un fichier déposé sur un vrai prompt doit rester visible")
     }
 
     /// The chain can also straddle two indexing passes, the message having been stored before

@@ -117,7 +117,7 @@ final class TranscriptParserTests: XCTestCase {
     }
 
     /// `attachment` is mostly Claude Code's own plumbing: hook output, token reminders, the
-    /// date, the skill listing. 112 015 such lines in the real archive against 273 real files.
+    /// date, the skill listing. 112 015 such lines in the real archive against 412 naming a file.
     /// Treating them all as attachments put a phantom "1 pièce jointe" on nearly every turn.
     func testClaudeCodePlumbingIsNotAnAttachment() {
         for kind in ["hook_success", "total_tokens_reminder", "hook_additional_context",
@@ -142,12 +142,22 @@ final class TranscriptParserTests: XCTestCase {
         XCTAssertEqual(name, "internal/api.go")
     }
 
-    /// `edited_text_file` carries no `displayPath`, so the name comes from the file itself
-    /// rather than from an absolute path too long to show in a turn header.
-    func testAnEditedTextFileFallsBackToItsFileName() {
-        guard case .attachment(let name) = parse(Line.fileAttachment(
+    /// `edited_text_file` names a file and is still not an attachment: it is the notice that
+    /// a file changed on disk. Over the whole archive 196 of its 205 occurrences follow a line
+    /// whose only content is a `tool_result`, i.e. the agent reporting its own edit, never
+    /// someone attaching a file. This test exists so it is not put back as a forgotten kind.
+    func testAnEditedTextFileIsNotAnAttachment() {
+        guard case .ignored = parse(Line.fileAttachment(
             parentUuid: "u2", kind: "edited_text_file",
             filename: "/Users/test/DevApps/Demo/notes/TODO.md"))
+        else { return XCTFail("une notification de modification n'est pas une pièce jointe") }
+    }
+
+    /// Without `displayPath` the name falls back to the file's own, an absolute path being
+    /// too long to sit in a turn header.
+    func testAnAttachmentWithoutDisplayPathFallsBackToItsFileName() {
+        guard case .attachment(let name) = parse(Line.fileAttachment(
+            parentUuid: "u2", filename: "/Users/test/DevApps/Demo/notes/TODO.md"))
         else { return XCTFail("attendu une pièce jointe") }
         XCTAssertEqual(name, "TODO.md")
     }

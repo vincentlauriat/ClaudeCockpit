@@ -209,8 +209,8 @@ enum Line {
         ])
     }
 
-    /// A file the user really attached. `edited_text_file` carries no `displayPath`, which is
-    /// why the name has to fall back to the last component of `filename`.
+    /// A line naming a file. Only `file` and `compact_file_reference` count as attachments;
+    /// `edited_text_file` is built here too, so tests can prove it stays out.
     static func fileAttachment(
         parentUuid: String, kind: String = "file",
         filename: String, displayPath: String? = nil, sessionId: String = session
@@ -316,6 +316,7 @@ extension TranscriptFixture {
             Line.fileAttachment(parentUuid: "u1",
                                 filename: "/Users/test/DevApps/Demo/internal/api.go",
                                 displayPath: "internal/api.go"),
+            // Claude Code's notice that a file changed on disk — never counted.
             Line.fileAttachment(parentUuid: "u1", kind: "edited_text_file",
                                 filename: "/Users/test/DevApps/Demo/notes/TODO.md"),
             Line.assistant(uuid: "a1", at: TestClock.offset(1), blocks: [
