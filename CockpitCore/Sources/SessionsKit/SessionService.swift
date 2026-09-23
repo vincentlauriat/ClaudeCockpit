@@ -282,6 +282,34 @@ public actor SessionService {
         return (sessionId, row[1] as? Int64 ?? 0)
     }
 
+    /// User turns carrying text, and how many of them keep a real attachment. Diagnostics for
+    /// the corpus benchmark: `attachment` is mostly Claude Code's plumbing, and counting it
+    /// wholesale once put a phantom "1 pièce jointe" on nearly every one of them.
+    func attachmentStats() throws
+        -> (userTurnsWithText: Int, withAttachment: Int, files: Int, bareBubbles: Int) {
+        let store = try store()
+        let withText = SessionStore.int(try store.scalar("""
+            SELECT COUNT(DISTINCT m.id) FROM messages m JOIN blocks b ON b.message_id = m.id
+            WHERE m.role = 'user' AND m.is_meta = 0 AND b.kind = 'text'
+            """))
+        let withAttachment = SessionStore.int(try store.scalar("""
+            SELECT COUNT(DISTINCT m.id) FROM messages m
+            JOIN blocks b ON b.message_id = m.id
+            JOIN attachments a ON a.message_id = m.id
+            WHERE m.role = 'user' AND m.is_meta = 0 AND b.kind = 'text'
+            """))
+        let files = SessionStore.int(try store.scalar("SELECT COUNT(*) FROM attachments"))
+        // The symptom that made this visible: a "Vous" bubble holding nothing but an
+        // attachment. The view renders a turn when it has content of its own *or* an
+        // attachment, so any such row is a bubble with no message in it.
+        let bare = SessionStore.int(try store.scalar("""
+            SELECT COUNT(*) FROM messages m
+            WHERE m.role = 'user' AND m.id IN (SELECT message_id FROM attachments)
+              AND m.id NOT IN (SELECT message_id FROM blocks WHERE kind = 'text')
+            """))
+        return (withText, withAttachment, files, bare)
+    }
+
     /// The session holding the most capped blocks — the worst case for the lazy re-read,
     /// since every one of them costs a seek and a re-parse. Diagnostics for the benchmark.
     func mostTruncatedSession() throws -> (sessionId: String, blocks: Int)? {

@@ -51,10 +51,11 @@ extension SessionExporter {
         return url.absoluteString
     }
 
-    /// `3 pièces jointes masquées.` — the count, the noun and the participle all agree.
-    static func attachmentNote(_ count: Int) -> String {
-        let participle = abs(count) < 2 ? "masquée" : "masquées"
-        return "\(FRFormat.plural(count, "pièce jointe")) \(participle)."
+    /// `2 pièces jointes : api.go, store.go` — the count and the noun agree, and the files
+    /// are named, which is the whole reason they are stored rather than counted.
+    static func attachmentNote(_ names: [String]) -> String {
+        guard !names.isEmpty else { return "" }
+        return "\(FRFormat.plural(names.count, "pièce jointe")) : \(names.joined(separator: ", "))"
     }
 
     static func roleLabel(_ message: SessionMessage) -> String {
@@ -119,8 +120,8 @@ extension SessionExporter {
                 out += "_[image \(block.imageMediaType ?? "")]_\n\n"
             }
         }
-        if message.attachmentCount > 0 {
-            out += "_\(attachmentNote(message.attachmentCount))_\n\n"
+        if !message.attachments.isEmpty {
+            out += "_\(attachmentNote(message.attachments))_\n\n"
         }
         return out
     }
@@ -218,8 +219,8 @@ extension SessionExporter {
                 out += "<p><em>[image \(escape(block.imageMediaType ?? ""))]</em></p>"
             }
         }
-        if message.attachmentCount > 0 {
-            out += "<p><em>\(escape(attachmentNote(message.attachmentCount)))</em></p>"
+        if !message.attachments.isEmpty {
+            out += "<p><em>\(escape(attachmentNote(message.attachments)))</em></p>"
         }
         return out + "</section>\n"
     }

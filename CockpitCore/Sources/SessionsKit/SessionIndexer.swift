@@ -222,6 +222,22 @@ extension SessionStore {
         var toolNames: [String: String] = [:]
         /// `toolUseId` → hash of the call's name and input, for the repeated-failure counter.
         var identities: [String: Int64] = [:]
+        // Attachments belong to the turn they follow — but only when that turn has content of
+        // its own. A `user` line carrying nothing but a `tool_result` is written by Claude
+        // Code to bring a tool's answer back, never by someone attaching a file, and the
+        // `edited_text_file` lines that follow one record what the *agent* just edited. In the
+        // real archive that is 107 of 273 file attachments; hanging them on that line put a
+        // bubble saying only "1 pièce jointe" where the reader expects a message.
+        //
+        // A chunk can open on an attachment whose turn was stored by an earlier pass, so the
+        // session's last message seeds the value — with the same eligibility test.
+        var attachmentOwner = try rows("""
+            SELECT m.id, EXISTS(
+                SELECT 1 FROM blocks b WHERE b.message_id = m.id AND b.kind <> 'toolResult')
+            FROM messages m WHERE m.session_id = ? ORDER BY m.seq DESC LIMIT 1
+            """, [file.sessionId]).first.flatMap { row -> Int64? in
+            Self.int(row[1]) != 0 ? row[0] as? Int64 : nil
+        }
 
         var start = data.startIndex
         while start < data.endIndex {
@@ -237,8 +253,11 @@ extension SessionStore {
 
             switch parser.parse(line) {
             case .message(let message), .compactBoundary(let message):
-                try store(message, file: file, sequence: sequence, at: location,
-                          facts: &facts, toolNames: &toolNames, identities: &identities)
+                if let stored = try store(
+                    message, file: file, sequence: sequence, at: location,
+                    facts: &facts, toolNames: &toolNames, identities: &identities) {
+                    attachmentOwner = stored.hasOwnContent ? stored.id : nil
+                }
                 sequence += 1
 
             case .aiTitle(_, let title):
@@ -256,12 +275,10 @@ extension SessionStore {
                 facts.costLinesAdded = added
                 facts.costLinesRemoved = removed
 
-            case .attachment(let parentUuid):
-                guard let parentUuid else { continue }
-                try run("""
-                    UPDATE messages SET attachment_count = attachment_count + 1
-                    WHERE session_id = ? AND uuid = ?
-                    """, [file.sessionId, parentUuid])
+            case .attachment(let name):
+                guard let owner = attachmentOwner else { continue }
+                try run("INSERT INTO attachments (message_id, name) VALUES (?, ?)",
+                        [owner, name])
 
             case .ignored:
                 continue
@@ -283,7 +300,7 @@ extension SessionStore {
         _ message: ParsedMessage, file: TranscriptFile, sequence: Int, at location: LineLocation,
         facts: inout SessionFacts, toolNames: inout [String: String],
         identities: inout [String: Int64]
-    ) throws {
+    ) throws -> (id: Int64, hasOwnContent: Bool)? {
         if let cwd = message.cwd { facts.cwd = cwd }
         if let branch = message.gitBranch { facts.gitBranch = branch }
         if let version = message.version { facts.version = version }
@@ -309,8 +326,11 @@ extension SessionStore {
             message.cacheReadTokens, message.cacheCreationTokens,
             location.fileId, location.offset, location.length,
         ])
-        guard db.changes > 0 else { return }  // uuid already stored for this session
+        guard db.changes > 0 else { return nil }  // uuid already stored for this session
         let messageId = db.lastInsertRowid
+        // Content of its own: anything the reader sees as this turn's, rather than a tool's
+        // answer carried back on it.
+        let hasOwnContent = message.blocks.contains { $0.kind != .toolResult }
 
         for block in message.blocks {
             let meta = Self.meta(for: block, reference: message.agentReferences[block.toolUseId ?? ""])
@@ -354,6 +374,7 @@ extension SessionStore {
                 ])
             }
         }
+        return (messageId, hasOwnContent)
     }
 
     /// The small JSON kept beside a block: what the readers need without re-parsing `body`.

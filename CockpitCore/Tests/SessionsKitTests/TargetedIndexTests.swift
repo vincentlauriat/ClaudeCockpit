@@ -151,8 +151,10 @@ final class ExportSafetyTests: XCTestCase {
         }
     }
 
-    func testAttachmentCountsAgreeInFrench() {
-        XCTAssertEqual(SessionExporter.attachmentNote(1), "1 pièce jointe masquée.")
-        XCTAssertEqual(SessionExporter.attachmentNote(3), "3 pièces jointes masquées.")
+    func testAttachmentNoteAgreesInFrenchAndNamesTheFiles() {
+        XCTAssertEqual(SessionExporter.attachmentNote(["api.go"]), "1 pièce jointe : api.go")
+        XCTAssertEqual(SessionExporter.attachmentNote(["api.go", "store.go"]),
+                       "2 pièces jointes : api.go, store.go")
+        XCTAssertEqual(SessionExporter.attachmentNote([]), "")
     }
 }

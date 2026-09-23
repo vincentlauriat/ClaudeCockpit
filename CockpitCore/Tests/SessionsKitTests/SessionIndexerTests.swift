@@ -63,8 +63,11 @@ final class SessionIndexerTests: XCTestCase {
         XCTAssertEqual(first.blocks[2].toolName, "Bash")
         XCTAssertEqual(first.blocks[0].id, "a1#0")
 
-        // The attachment's 4 KB payload is not stored — only its existence, on its parent.
-        XCTAssertEqual(try XCTUnwrap(byId["u2"]).attachmentCount, 1)
+        // Hook output rides on the same line type as a real attachment and must not show up.
+        XCTAssertEqual(try XCTUnwrap(byId["u2"]).attachments, [])
+        // Real files do, named, on the turn they were attached to.
+        XCTAssertEqual(try XCTUnwrap(byId["u1"]).attachments, ["internal/api.go", "TODO.md"])
+        XCTAssertEqual(try XCTUnwrap(byId["u1"]).attachmentCount, 2)
 
         XCTAssertTrue(try XCTUnwrap(byId["s1"]).isCompactBoundary)
         XCTAssertEqual(try XCTUnwrap(byId["s1"]).systemSubtype, "compact_boundary")
@@ -77,6 +80,87 @@ final class SessionIndexerTests: XCTestCase {
         let failing = try XCTUnwrap(byId["u6"]).blocks.first
         XCTAssertEqual(failing?.toolName, "Bash")
         XCTAssertTrue(failing?.isError ?? false)
+    }
+
+    /// An attachment's `parentUuid` points at the *previous attachment*, not at the message:
+    /// Claude Code chains them up to nine deep. Following the chain and taking the last
+    /// message written before it agree on all 273 file attachments of the real archive, so
+    /// the indexer takes the second route — and this pins it against a chain three deep.
+    func testAnAttachmentBehindAChainOfPlumbingStillFindsItsTurn() async throws {
+        try fixture.write([
+            Line.user(uuid: "c-u1", text: "voici le fichier", at: TestClock.offset(0),
+                      sessionId: "sess-chain"),
+            Line.attachment(parentUuid: "c-u1", kind: "hook_success", sessionId: "sess-chain"),
+            Line.attachment(parentUuid: "ignoré", kind: "environment", sessionId: "sess-chain"),
+            Line.attachment(parentUuid: "ignoré", kind: "date", sessionId: "sess-chain"),
+            Line.fileAttachment(parentUuid: "ignoré", filename: "/x/y/api.go",
+                                displayPath: "y/api.go", sessionId: "sess-chain"),
+            Line.assistant(uuid: "c-a1", at: TestClock.offset(1),
+                           blocks: [Line.text("bien reçu")],
+                           messageId: "msg-c1", sessionId: "sess-chain"),
+        ], to: "\(Line.project)/sess-chain.jsonl")
+
+        let service = fixture.service()
+        try await service.index()
+        let messages = try await service.messages(sessionId: "sess-chain")
+        let byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+
+        XCTAssertEqual(try XCTUnwrap(byId["c-u1"]).attachments, ["y/api.go"])
+        XCTAssertEqual(try XCTUnwrap(byId["c-a1"]).attachments, [],
+                       "le tour suivant ne doit rien récupérer")
+    }
+
+    /// A `user` line carrying only a `tool_result` is written by Claude Code to bring an
+    /// answer back, never by someone attaching a file — and the `edited_text_file` that
+    /// follows one records what the *agent* just edited. Hanging it there produced a bubble
+    /// saying nothing but "1 pièce jointe": 107 of the archive's 273 file attachments.
+    func testAFileRecordedAfterAToolResultIsNotTheUsersAttachment() async throws {
+        try fixture.write([
+            Line.user(uuid: "t-u1", text: "modifie le fichier", at: TestClock.offset(0),
+                      sessionId: "sess-tool"),
+            Line.assistant(uuid: "t-a1", at: TestClock.offset(1), blocks: [
+                Line.toolUse(id: "t-t1", name: "Edit", input: [
+                    "file_path": "/x/store.py", "old_string": "a", "new_string": "b",
+                ]),
+            ], messageId: "msg-t1", sessionId: "sess-tool"),
+            Line.toolResult(uuid: "t-u2", at: TestClock.offset(2), toolUseId: "t-t1",
+                            text: "Edit applied", sessionId: "sess-tool"),
+            // Claude Code notes what it just edited, right after the tool's answer.
+            Line.fileAttachment(parentUuid: "t-u2", kind: "edited_text_file",
+                                filename: "/x/store.py", sessionId: "sess-tool"),
+        ], to: "\(Line.project)/sess-tool.jsonl")
+
+        let service = fixture.service()
+        try await service.index()
+        let messages = try await service.messages(sessionId: "sess-tool")
+        XCTAssertTrue(messages.allSatisfy(\.attachments.isEmpty),
+                      "aucun tour ne doit afficher une pièce jointe que Vincent n'a pas jointe")
+
+        // And no bubble is left carrying an attachment and nothing else.
+        let bare = messages.filter {
+            !$0.attachments.isEmpty && !$0.blocks.contains { $0.kind != .toolResult }
+        }
+        XCTAssertEqual(bare, [], "aucune bulle « Vous » réduite à une pièce jointe")
+    }
+
+    /// The chain can also straddle two indexing passes, the message having been stored before
+    /// the attachment was appended.
+    func testAnAttachmentAppendedLaterStillFindsItsTurn() async throws {
+        let path = "\(Line.project)/sess-late.jsonl"
+        try fixture.write([
+            Line.user(uuid: "l-u1", text: "le fichier arrive", at: TestClock.offset(0),
+                      sessionId: "sess-late"),
+        ], to: path)
+        let service = fixture.service()
+        try await service.index()
+
+        try fixture.append(Line.fileAttachment(
+            parentUuid: "l-u1", filename: "/x/y/tard.go", displayPath: "y/tard.go",
+            sessionId: "sess-late"), to: path)
+        try await service.index()
+
+        let messages = try await service.messages(sessionId: "sess-late")
+        XCTAssertEqual(messages.first?.attachments, ["y/tard.go"])
     }
 
     func testRebuildsFileEditsWithTheirStrings() async throws {
