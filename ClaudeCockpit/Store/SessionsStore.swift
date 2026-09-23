@@ -73,6 +73,18 @@ extension CockpitStore {
         return (try? await sessionService.search(query, filter: sessionFilter)) ?? []
     }
 
+    /// Today's sessions, read with a filter of their own.
+    ///
+    /// The overview card must not reuse `sessionFilter`: that one belongs to the browser,
+    /// the user changes it, and it is capped at 200 rows — today's sessions could silently
+    /// fall off the page and the card would undercount without ever looking wrong.
+    func todaySessions(now: Date = Date(), calendar: Calendar = .current) async -> [SessionRef] {
+        var filter = SessionFilter()
+        filter.since = calendar.startOfDay(for: now)
+        filter.limit = 500
+        return (try? await sessionService.listSessions(filter)) ?? []
+    }
+
     func sessionProjects() async -> [ProjectCount] {
         (try? await sessionService.projects()) ?? []
     }

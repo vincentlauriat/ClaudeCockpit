@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CockpitShared
 
 /// The preferences surface, shown both in the `Settings` scene (⌘,) and embedded in the
 /// main window's detail area — hence flexible sizing rather than a fixed frame.
@@ -43,11 +44,20 @@ private struct GeneralSettingsTab: View {
     @AppStorage(SettingsKey.usageRefreshSeconds) private var refreshSeconds = 30
     @AppStorage(SettingsKey.currency) private var currency = "USD"
     @AppStorage(SettingsKey.eurRate) private var eurRate = 0.92
+    @AppStorage(SettingsKey.sessionsIndexEnabled) private var sessionsIndexEnabled = true
+    @AppStorage(SettingsKey.sessionsShowSystemLines) private var sessionsShowSystemLines = false
 
     /// Mirrors `SMAppService`'s real state: the store exposes it read-only, so the toggle
     /// keeps its own copy and reverts it when registration throws.
     @State private var launchAtLogin = false
     @State private var loginError: String?
+    @State private var confirmRebuild = false
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter
+    }()
 
     var body: some View {
         Form {
@@ -90,6 +100,8 @@ private struct GeneralSettingsTab: View {
                         .foregroundStyle(Theme.slate)
                 }
             }
+
+            sessionsSection
         }
         .formStyle(.grouped)
         .onAppear { launchAtLogin = store.launchAtLogin }
@@ -101,6 +113,68 @@ private struct GeneralSettingsTab: View {
         } message: {
             Text(loginError ?? "")
         }
+        .alert("Reconstruire l'index des sessions ?", isPresented: $confirmRebuild) {
+            Button("Annuler", role: .cancel) { confirmRebuild = false }
+            Button("Reconstruire", role: .destructive) {
+                Task { await store.rebuildSessionIndex() }
+            }
+        } message: {
+            Text("Tous les transcripts de ~/.claude/projects seront relus depuis le début, ce qui peut prendre plusieurs minutes. Les transcripts eux-mêmes ne sont jamais modifiés.")
+        }
+    }
+
+    // MARK: Sessions
+
+    private var sessionsSection: some View {
+        Section("Sessions") {
+            Toggle("Indexer les transcripts", isOn: $sessionsIndexEnabled)
+                .onChange(of: sessionsIndexEnabled) { _, enabled in
+                    // The store only checks this flag when its loops start, so turning
+                    // indexing back on has to kick a pass off itself.
+                    if enabled { Task { await store.indexSessions() } }
+                }
+            Text("La section Sessions ne fonctionne qu'avec cet index. Il est reconstructible à tout moment et ne modifie jamais les transcripts.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.slate)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Afficher les lignes système dans les transcripts", isOn: $sessionsShowSystemLines)
+            Text("Hooks, méta-lignes et pièces jointes, masqués par défaut.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.slate)
+                .fixedSize(horizontal: false, vertical: true)
+
+            LabeledContent("État de l'index") {
+                Text(indexStateLabel)
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.slate)
+                    .multilineTextAlignment(.trailing)
+            }
+            HStack {
+                Button("Reconstruire l'index") { confirmRebuild = true }
+                    .disabled(store.sessionIndex.isRunning)
+                if store.sessionIndex.isRunning {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                Text("Taille : \(Self.byteFormatter.string(fromByteCount: store.sessionIndex.dbSizeBytes))")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.slate)
+            }
+        }
+    }
+
+    private var indexStateLabel: String {
+        let progress = store.sessionIndex
+        if progress.isRunning {
+            return "\(FRFormat.integer(progress.filesDone)) / \(FRFormat.integer(progress.filesTotal)) transcripts"
+        }
+        guard let last = progress.lastRun else { return "jamais indexé" }
+        // `filesDone` counts the files the last pass actually read, which is a handful
+        // on an incremental tick — so it is shown against `filesTotal`, never alone.
+        return "dernier passage : \(FRFormat.integer(progress.filesDone)) / \(FRFormat.integer(progress.filesTotal)) · \(FRFormat.relative(last))"
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

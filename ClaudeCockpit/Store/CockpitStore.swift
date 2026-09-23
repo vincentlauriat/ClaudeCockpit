@@ -109,6 +109,7 @@ final class CockpitStore {
     }
     private var sessionListTask: Task<Void, Never>?
     private var sessionsWatcher: RecursiveWatcher?
+    private var sessionsWatchTask: Task<Void, Never>?
 
     /// Last user-visible notice (toast) from a skills action.
     var notice: String?
@@ -199,26 +200,7 @@ final class CockpitStore {
                 await self?.refreshRTK()
             }
         })
-        loopTasks.append(Task { [weak self] in
-            guard UserDefaults.standard.bool(forKey: SettingsKey.sessionsIndexEnabled) else { return }
-            // The first index walks ~900 MB, so it starts right away and reports its
-            // progress; everything after it is driven by the watcher below. That is why
-            // the sessions source owns no periodic timer and cannot collide with the
-            // usage scan on a shared tick.
-            await self?.indexSessions(full: false)
-            guard let self else { return }
-            let watcher = RecursiveWatcher(
-                roots: [self.paths.projectsDir],
-                filter: { $0.hasSuffix(".jsonl") },
-                debounce: 1.0,
-                pollingInterval: 600)
-            self.sessionsWatcher = watcher
-            watcher.start()
-            for await _ in watcher.changes {
-                if Task.isCancelled { return }
-                await self.indexSessions(full: false)
-            }
-        })
+        startSessionsWatch()
         loopTasks.append(Task { [weak self] in
             await self?.refreshSkills()
             guard let self else { return }
@@ -255,6 +237,39 @@ final class CockpitStore {
             }
         }
     }
+
+    /// Indexes once, then follows the archive. Restartable on purpose: the user can turn
+    /// indexing off and on from the settings, and the previous version armed the watcher
+    /// only at launch, so re-enabling the section did nothing until the next relaunch.
+    func startSessionsWatch() {
+        sessionsWatchTask?.cancel()
+        sessionsWatchTask = nil
+        sessionsWatcher?.stop()
+        sessionsWatcher = nil
+        guard defaults.bool(forKey: SettingsKey.sessionsIndexEnabled) else { return }
+        sessionsWatchTask = Task { [weak self] in
+            // The first index walks ~900 MB, so it starts right away and reports its
+            // progress; everything after it is driven by the watcher. That is why the
+            // sessions source owns no periodic timer and cannot collide with the usage
+            // scan on a shared tick.
+            await self?.indexSessions(full: false)
+            guard let self, !Task.isCancelled else { return }
+            let watcher = RecursiveWatcher(
+                roots: [self.paths.projectsDir],
+                filter: { $0.hasSuffix(".jsonl") },
+                debounce: 1.0,
+                pollingInterval: 600)
+            self.sessionsWatcher = watcher
+            watcher.start()
+            for await _ in watcher.changes {
+                if Task.isCancelled { return }
+                await self.indexSessions(full: false)
+            }
+        }
+    }
+
+    /// Called by the settings toggle so enabling indexing takes effect immediately.
+    func sessionsIndexingDidChange() { startSessionsWatch() }
 
     func refreshAll() async {
         async let a: Void = refreshUsage()

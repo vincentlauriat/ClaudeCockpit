@@ -2,6 +2,7 @@ import SwiftUI
 import CockpitShared
 import QuotaKit
 import RTKKit
+import SessionsKit
 import SkillsKit
 import UsageKit
 
@@ -121,9 +122,108 @@ struct OverviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionLabel(text: "Insights")
             insightsCard
+            SectionLabel(text: "Sessions aujourd'hui")
+            sessionsTodayCard
             SectionLabel(text: "7 derniers jours")
             rtkWeekCard
         }
+    }
+
+    // MARK: Sessions today
+
+    /// Today's sessions, read from the list the Sessions section already holds.
+    ///
+    /// `store.sessions` is the current page of `store.sessionFilter`, not the whole
+    /// archive: if the user narrows the filter in the Sessions browser, this card
+    /// narrows with it. That is deliberate — the store never keeps the full archive
+    /// in memory — but it means the count is "parmi les sessions listées".
+    private var todaySessions: [SessionRef] {
+        let start = Calendar.current.startOfDay(for: now)
+        return store.sessions
+            .filter { $0.lastTimestamp >= start }
+            .sorted { $0.lastTimestamp > $1.lastTimestamp }
+    }
+
+    /// Sum of the costs the transcripts actually recorded, plus how many sessions
+    /// carried no `cost-state` line at all. A missing cost is not zero.
+    private var todayCost: (total: Double, missing: Int) {
+        todaySessions.reduce(into: (total: 0.0, missing: 0)) { result, session in
+            if let cost = session.costStateUSD { result.total += cost } else { result.missing += 1 }
+        }
+    }
+
+    private var sessionsTodayCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let message = store.sessionsState.errorMessage {
+                SourceBanner(
+                    kind: .info,
+                    message: "Index des sessions indisponible : \(message)",
+                    action: { Task { await store.indexSessions() } },
+                    actionTitle: "Réindexer")
+            } else if store.sessions.isEmpty && store.sessionIndex.isRunning {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Indexation des transcripts en cours…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            } else if todaySessions.isEmpty {
+                Text("Aucune session depuis minuit.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(FRFormat.integer(todaySessions.count))
+                        .font(.display(26))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.violet)
+                    Text(todaySessions.count > 1 ? "sessions" : "session")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.slate)
+                    Spacer()
+                    Text(costLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.blue)
+                }
+                if let latest = todaySessions.first {
+                    Text(latest.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("dernière activité \(FRFormat.relative(latest.lastTimestamp, now: now))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.slate)
+                }
+                if todayCost.missing > 0 {
+                    Text(costCaveat)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.slate)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .card()
+    }
+
+    private var costLabel: String {
+        let cost = todayCost
+        // Every session lacking its cost line: a total would be a fabricated zero.
+        if cost.missing == todaySessions.count { return "coût inconnu" }
+        return store.money(cost.total)
+    }
+
+    private var costCaveat: String {
+        let missing = todayCost.missing
+        return missing == todaySessions.count
+            ? "Aucune de ces sessions n'a enregistré son coût."
+            : "Coût partiel : \(FRFormat.integer(missing)) session(s) sans coût enregistré."
     }
 
     private var insightsCard: some View {
