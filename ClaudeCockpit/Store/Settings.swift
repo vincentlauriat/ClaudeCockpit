@@ -14,6 +14,10 @@ enum SettingsKey {
     static let panelSectionToday = "panel.section.today"
     static let panelSectionSavings = "panel.section.savings"
     static let mainSection = "window.section"                         // last selected sidebar item
+    static let sessionsIndexEnabled = "settings.sessionsIndexEnabled" // Bool, default true
+    static let sessionsShowSystemLines = "sessions.showSystemLines"   // Bool, default false
+    static let sessionsGrouping = "sessions.grouping"                 // "day" | "project"
+    static let sessionsSelectedId = "sessions.selectedId"             // last opened session
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
@@ -23,6 +27,9 @@ enum SettingsKey {
             panelSectionLimits: true,
             panelSectionToday: true,
             panelSectionSavings: true,
+            sessionsIndexEnabled: true,
+            sessionsShowSystemLines: false,
+            sessionsGrouping: "day",
         ])
     }
 }

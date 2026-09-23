@@ -250,7 +250,7 @@
 
 <section id="instruments"><div class="wrap">
   <p class="eyebrow"><span class="en">The cockpit</span><span class="fr">Le cockpit</span><span class="zh">座艙</span></p>
-  <h2><span class="en">Four instruments, one window</span><span class="fr">Quatre instruments, une fenêtre</span><span class="zh">四項儀表，一個視窗</span></h2>
+  <h2><span class="en">Five instruments, one window</span><span class="fr">Cinq instruments, une fenêtre</span><span class="zh">五項儀表，一個視窗</span></h2>
   <p class="lead">
     <span class="en">Four separate apps used to answer four halves of the same question. Claude Cockpit puts them on one dashboard: how much quota is left, what today actually cost, what your tooling saved, and what Claude Code is working with.</span>
     <span class="fr">Quatre apps distinctes répondaient jusqu'ici à quatre moitiés de la même question. Claude Cockpit les réunit sur un seul tableau de bord : combien de quota reste-t-il, ce que la journée a réellement coûté, ce que l'outillage a économisé, et avec quoi Claude Code travaille.</span>
@@ -285,6 +285,13 @@
       <p><span class="en">Three levels — Library, Global, Project — with copy, move, plugin import and automatic backups.</span>
       <span class="fr">Trois niveaux — Bibliothèque, Global, Projet — avec copie, déplacement, import de plugin et sauvegardes automatiques.</span>
       <span class="zh">三個層級——資料庫、全域、專案——支援複製、移動、外掛匯入與自動備份。</span></p>
+    </div>
+    <div class="card">
+      <div class="ico">▦</div>
+      <h3><span class="en">Sessions</span><span class="fr">Sessions</span><span class="zh">工作階段</span></h3>
+      <p><span class="en">Every Claude Code session, transcript and all — searchable, exportable, and resumable in one click.</span>
+      <span class="fr">Chaque session Claude Code, transcript compris — recherchable, exportable, et reprise en un clic.</span>
+      <span class="zh">每一次 Claude Code 工作階段，連同完整記錄——可搜尋、可匯出，一鍵即可繼續。</span></p>
     </div>
   </div>
 
@@ -423,6 +430,37 @@
   </figure>
 </div></section>
 
+<section id="sessions"><div class="wrap">
+  <p class="eyebrow"><span class="en">05 · Sessions</span><span class="fr">05 · Sessions</span><span class="zh">05 · 工作階段</span></p>
+  <h2><span class="en">Every transcript, searchable and explorable</span><span class="fr">Chaque transcript, recherchable et explorable</span><span class="zh">每一份記錄，皆可搜尋與瀏覽</span></h2>
+  <p class="lead">
+    <span class="en">Claude Cockpit indexes every Claude Code transcript under <code>~/.claude/projects</code> into a local, full-text searchable database — the same tool calls, diffs, thinking and sub-agent runs you would see live, still there long after the terminal closed.</span>
+    <span class="fr">Claude Cockpit indexe chaque transcript Claude Code sous <code>~/.claude/projects</code> dans une base locale, recherchable en texte intégral — les mêmes appels d'outils, diffs, thinking et sous-agents que vous verriez en direct, toujours là longtemps après que le terminal s'est fermé.</span>
+    <span class="zh">Claude Cockpit 會把 <code>~/.claude/projects</code> 下的每一份 Claude Code 記錄，索引進一個可全文搜尋的本機資料庫——與即時畫面相同的工具呼叫、差異比對、思考過程與子代理執行，終端機關閉許久之後依然都在。</span>
+  </p>
+
+  <ul class="bul">
+    <li><span class="en"><b>Full transcripts, exactly as they happened.</b> User and assistant turns, collapsible tool calls with their input and output, coloured diffs for file edits, thinking blocks, sub-agent transcripts expanded inline, and a health grade for how the session actually went.</span>
+    <span class="fr"><b>Le transcript complet, tel qu'il s'est déroulé.</b> Tours utilisateur et assistant, appels d'outils repliables avec leur entrée et leur sortie, diffs colorés pour les éditions de fichiers, blocs de thinking, transcripts de sous-agents dépliés en ligne, et une note de santé sur le déroulement réel de la session.</span>
+    <span class="zh"><b>完整記錄，如實重現。</b>使用者與助理的每一輪對話、可展開的工具呼叫（含輸入與輸出）、檔案編輯的彩色差異比對、思考區塊、內嵌展開的子代理記錄，以及反映該次工作階段實際狀況的健康分數。</span></li>
+    <li><span class="en"><b>Find anything, across every session.</b> Full-text search over message text and tool input and output, with filters by project, date range, starred and errors, grouped by day or by project.</span>
+    <span class="fr"><b>Retrouvez n'importe quoi, dans toutes les sessions.</b> Recherche en texte intégral sur le texte des messages et les entrées/sorties d'outils, avec des filtres par projet, période, favoris et erreurs, regroupés par jour ou par projet.</span>
+    <span class="zh"><b>跨所有工作階段搜尋任何內容。</b>對訊息文字與工具輸入輸出進行全文搜尋，並可依專案、期間、已加星號與含錯誤篩選，依日或依專案分組。</span></li>
+    <li><span class="en"><b>Act on a session without leaving the app.</b> Star it, rename it, export it to Markdown or HTML, reveal the transcript in the Finder, or resume it in Terminal with <code>claude --resume</code>.</span>
+    <span class="fr"><b>Agissez sur une session sans quitter l'application.</b> Mettez-lui une étoile, renommez-la, exportez-la en Markdown ou en HTML, révélez le transcript dans le Finder, ou reprenez-la dans Terminal avec <code>claude --resume</code>.</span>
+    <span class="zh"><b>不必離開應用程式即可操作工作階段。</b>加上星號、重新命名、匯出為 Markdown 或 HTML、在 Finder 中顯示記錄檔，或以 <code>claude --resume</code> 在終端機中繼續。</span></li>
+  </ul>
+
+  <figure class="shot shot-wide">
+    <img src="screenshots/sessions.png" alt="The Sessions section: a searchable, filterable list of every Claude Code transcript next to a detail pane with collapsible tool calls, diffs and thinking blocks" loading="lazy" onerror="this.style.display='none';var f=this.closest('figure');if(f)f.style.display='none'">
+    <figcaption>
+      <span class="en">Sessions: transcript browser, full-text search and detail view.</span>
+      <span class="fr">Sessions : navigateur de transcripts, recherche plein texte et vue de détail.</span>
+      <span class="zh">工作階段：記錄瀏覽器、全文搜尋與詳細檢視。</span>
+    </figcaption>
+  </figure>
+</div></section>
+
 <section id="privacy"><div class="wrap">
   <p class="eyebrow"><span class="en">How it works</span><span class="fr">Comment ça marche</span><span class="zh">運作方式</span></p>
   <h2><span class="en">Everything is read locally</span><span class="fr">Tout est lu en local</span><span class="zh">一切都在本機讀取</span></h2>
@@ -442,6 +480,12 @@
       <td><span class="en">Read incrementally from <code>~/.claude/projects</code>, from the byte offset reached last time. They are read, counted, and never sent anywhere.</span>
       <span class="fr">Lus de façon incrémentale depuis <code>~/.claude/projects</code>, à partir de l'offset atteint la fois précédente. Ils sont lus, comptés, et jamais envoyés nulle part.</span>
       <span class="zh">從 <code>~/.claude/projects</code> 依上次讀取的位移增量讀取。只被讀取與計數，絕不外傳。</span></td>
+    </tr>
+    <tr>
+      <td><span class="en">Session index</span><span class="fr">Index des sessions</span><span class="zh">工作階段索引</span></td>
+      <td><span class="en">Built by reading the same transcripts into a local SQLite database, so the Sessions section can search and browse without re-scanning the whole archive on every open. It never writes to <code>~/.claude</code>, and building or querying it makes no network call.</span>
+      <span class="fr">Construit en lisant les mêmes transcripts dans une base SQLite locale, pour que la section Sessions puisse rechercher et naviguer sans rescanner toute l'archive à chaque ouverture. Il n'écrit jamais dans <code>~/.claude</code>, et sa construction ou son interrogation ne fait aucun appel réseau.</span>
+      <span class="zh">透過讀取相同的記錄檔並寫入本機 SQLite 資料庫來建立，讓「工作階段」區塊能夠搜尋與瀏覽，而不必每次開啟都重新掃描整個檔案庫。它絕不寫入 <code>~/.claude</code>，建立或查詢時也不會發出任何網路請求。</span></td>
     </tr>
     <tr>
       <td><span class="en">Anthropic quotas</span><span class="fr">Quotas Anthropic</span><span class="zh">Anthropic 配額</span></td>

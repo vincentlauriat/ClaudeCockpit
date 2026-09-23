@@ -7,6 +7,7 @@ import UsageKit
 import QuotaKit
 import RTKKit
 import SkillsKit
+import SessionsKit
 
 /// Lifecycle of one data source. Every source is independent: a failure shows
 /// in its own section and never blocks the others.
@@ -23,13 +24,14 @@ enum SourceState: Equatable {
 
 /// Sidebar sections of the main window.
 enum CockpitSection: String, CaseIterable, Identifiable {
-    case overview, usage, quotas, rtk, skills, agents, commands, settings
+    case overview, usage, sessions, quotas, rtk, skills, agents, commands, settings
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .overview: "Vue d'ensemble"
         case .usage: "Usage local"
+        case .sessions: "Sessions"
         case .quotas: "Quotas"
         case .rtk: "RTK"
         case .skills: "Skills"
@@ -42,6 +44,7 @@ enum CockpitSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "gauge.with.dots.needle.33percent"
         case .usage: "chart.bar.xaxis"
+        case .sessions: "text.bubble.fill"
         case .quotas: "speedometer"
         case .rtk: "leaf.fill"
         case .skills: "sparkles"
@@ -70,6 +73,7 @@ final class CockpitStore {
     private let usageService: UsageService
     private let quotaService: QuotaService
     private var rtkService: RTKService
+    let sessionService: SessionService
     private let skillsStore: ResourceStore
     private let defaults = UserDefaults.standard
 
@@ -87,6 +91,32 @@ final class CockpitStore {
 
     private(set) var skills: SkillsInventory?
     private(set) var skillsState: SourceState = .idle
+
+    /// Sessions are not a snapshot like the other sources: the archive is far too
+    /// large to hold in memory, so the store keeps only the current page of the
+    /// list plus the indexing progress, and the views query the service directly.
+    /// Written only by the sessions extension in `SessionsStore.swift`; `private(set)`
+    /// cannot express that, being file-scoped, so these stay plainly internal.
+    var sessions: [SessionRef] = []
+    var sessionsState: SourceState = .idle
+    var sessionIndex: IndexProgress = .idle
+    var sessionFilter = SessionFilter() {
+        didSet {
+            guard sessionFilter != oldValue else { return }
+            sessionListTask?.cancel()
+            sessionListTask = Task { [weak self] in await self?.refreshSessionList() }
+        }
+    }
+    /// True when the last listing filled its page exactly, so more sessions exist than the
+    /// list is showing. The view says so instead of pretending the archive ends there.
+    var sessionsTruncated = false
+    private var sessionListTask: Task<Void, Never>?
+    private var sessionsWatcher: RecursiveWatcher?
+    private var sessionsWatchTask: Task<Void, Never>?
+    /// A targeted pass never prunes: only a complete walk can tell a deleted
+    /// transcript from one the watcher simply did not name. This bounds how
+    /// long a deleted session can linger in the list.
+    var lastFullSessionWalk: Date = .distantPast
 
     /// Last user-visible notice (toast) from a skills action.
     var notice: String?
@@ -137,6 +167,7 @@ final class CockpitStore {
             $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
         }
         rtkService = RTKService(paths: paths, overridePath: override)
+        sessionService = SessionService(paths: paths)
         skillsStore = ResourceStore(paths: paths)
         pricing = UserDefaults.standard.string(forKey: SettingsKey.pricingJSON)
             .map(PricingSettings.decoded(fromJSONString:)) ?? .default
@@ -176,6 +207,7 @@ final class CockpitStore {
                 await self?.refreshRTK()
             }
         })
+        startSessionsWatch()
         loopTasks.append(Task { [weak self] in
             await self?.refreshSkills()
             guard let self else { return }
@@ -212,6 +244,39 @@ final class CockpitStore {
             }
         }
     }
+
+    /// Indexes once, then follows the archive. Restartable on purpose: the user can turn
+    /// indexing off and on from the settings, and the previous version armed the watcher
+    /// only at launch, so re-enabling the section did nothing until the next relaunch.
+    func startSessionsWatch() {
+        sessionsWatchTask?.cancel()
+        sessionsWatchTask = nil
+        sessionsWatcher?.stop()
+        sessionsWatcher = nil
+        guard defaults.bool(forKey: SettingsKey.sessionsIndexEnabled) else { return }
+        sessionsWatchTask = Task { [weak self] in
+            // The first index walks ~900 MB, so it starts right away and reports its
+            // progress; everything after it is driven by the watcher. That is why the
+            // sessions source owns no periodic timer and cannot collide with the usage
+            // scan on a shared tick.
+            await self?.indexSessions(full: false)
+            guard let self, !Task.isCancelled else { return }
+            let watcher = RecursiveWatcher(
+                roots: [self.paths.projectsDir],
+                filter: { $0.hasSuffix(".jsonl") },
+                debounce: 1.0,
+                pollingInterval: 600)
+            self.sessionsWatcher = watcher
+            watcher.start()
+            for await changed in watcher.changes {
+                if Task.isCancelled { return }
+                await self.indexSessions(changedPaths: changed)
+            }
+        }
+    }
+
+    /// Called by the settings toggle so enabling indexing takes effect immediately.
+    func sessionsIndexingDidChange() { startSessionsWatch() }
 
     func refreshAll() async {
         async let a: Void = refreshUsage()

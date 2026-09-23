@@ -2,6 +2,7 @@ import SwiftUI
 import CockpitShared
 import QuotaKit
 import RTKKit
+import SessionsKit
 import SkillsKit
 import UsageKit
 
@@ -11,6 +12,14 @@ import UsageKit
 struct OverviewView: View {
     @Environment(CockpitStore.self) private var store
     @State private var now = Date()
+
+    /// Today's sessions, from the store's own dedicated query rather than from
+    /// `store.sessions`, which is the browser's filtered page.
+    @State private var todaySessions: [SessionRef] = []
+    /// When `todaySessions` was read — what "depuis minuit" and the relative time
+    /// of the latest session are measured against.
+    @State private var sessionsAsOf = Date()
+    @State private var sessionsLoaded = false
 
     private var rtkWeekSaved: Int {
         store.rtk?.last7Days.reduce(0) { $0 + $1.savedTokens } ?? 0
@@ -29,6 +38,16 @@ struct OverviewView: View {
             .padding(24)
         }
         .onAppear { now = Date() }
+        // Re-read after every index pass: a session that started since the last one
+        // would otherwise never reach the card.
+        .task(id: store.sessionIndex.lastRun) {
+            let asOf = Date()
+            let rows = await store.todaySessions(now: asOf)
+            guard !Task.isCancelled else { return }
+            sessionsAsOf = asOf
+            todaySessions = rows
+            sessionsLoaded = true
+        }
     }
 
     // MARK: Header
@@ -121,9 +140,98 @@ struct OverviewView: View {
         VStack(alignment: .leading, spacing: 12) {
             SectionLabel(text: "Insights")
             insightsCard
+            SectionLabel(text: "Sessions aujourd'hui")
+            sessionsTodayCard
             SectionLabel(text: "7 derniers jours")
             rtkWeekCard
         }
+    }
+
+    // MARK: Sessions today
+
+    /// Recorded cost where the transcript has one, priced from the per-model
+    /// tokens everywhere else, and a count of the sessions that offer neither.
+    /// A missing cost is never counted as zero.
+    private var todayCost: (total: Double, missing: Int) {
+        todaySessions.reduce(into: (total: 0.0, missing: 0)) { result, session in
+            if let cost = store.sessionCost(session) { result.total += cost.usd } else { result.missing += 1 }
+        }
+    }
+
+    private var sessionsTodayCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let message = store.sessionsState.errorMessage {
+                SourceBanner(
+                    kind: .info,
+                    message: "Index des sessions indisponible : \(message)",
+                    action: { Task { await store.indexSessions() } },
+                    actionTitle: "Réindexer")
+            } else if !sessionsLoaded || (todaySessions.isEmpty && store.sessionIndex.isRunning) {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(store.sessionIndex.isRunning
+                        ? "Indexation des transcripts en cours…"
+                        : "Lecture des sessions du jour…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            } else if todaySessions.isEmpty {
+                Text("Aucune session depuis minuit.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(FRFormat.integer(todaySessions.count))
+                        .font(.display(26))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.violet)
+                    Text(todaySessions.count < 2 ? "session" : "sessions")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.slate)
+                    Spacer()
+                    Text(costLabel)
+                        .font(.system(size: 13, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(Theme.blue)
+                }
+                if let latest = todaySessions.first {
+                    Text(latest.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("dernière activité \(FRFormat.relative(latest.lastTimestamp, now: sessionsAsOf))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.slate)
+                }
+                if todayCost.missing > 0 {
+                    Text(costCaveat)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.slate)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .card()
+    }
+
+    private var costLabel: String {
+        let cost = todayCost
+        // Every session lacking its cost line: a total would be a fabricated zero.
+        if cost.missing == todaySessions.count { return "coût inconnu" }
+        return store.money(cost.total)
+    }
+
+    private var costCaveat: String {
+        let missing = todayCost.missing
+        return missing == todaySessions.count
+            ? "Aucune de ces sessions n'a enregistré son coût."
+            : "Coût partiel : \(FRFormat.plural(missing, "session")) sans coût enregistré."
     }
 
     private var insightsCard: some View {

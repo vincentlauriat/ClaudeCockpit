@@ -22,3 +22,25 @@ final class FRFormatTests: XCTestCase {
         XCTAssertEqual(FRFormat.percent(42.5, fraction: false, digits: 1), "42,5 %")
     }
 }
+
+extension FRFormatTests {
+    /// French agrees the singular on 0 and 1, unlike English. The bug this guards against
+    /// shipped visibly once: a transcript turn read "1 pièces jointes".
+    func testPluralAgreesOnZeroAndOne() {
+        XCTAssertEqual(FRFormat.plural(0, "pièce jointe"), "0 pièce jointe")
+        XCTAssertEqual(FRFormat.plural(1, "pièce jointe"), "1 pièce jointe")
+        XCTAssertEqual(FRFormat.plural(2, "pièce jointe"), "2 pièces jointes")
+        XCTAssertEqual(FRFormat.plural(1, "tour"), "1 tour")
+        // Built from `integer` rather than written out: the French group separator is a
+        // narrow no-break space, and that is `integer`'s business to test, not this one's.
+        XCTAssertEqual(FRFormat.plural(1_234, "tour"), "\(FRFormat.integer(1_234)) tours")
+    }
+
+    /// Words ending in s, x or z are invariable; an explicit plural covers the rest.
+    func testPluralLeavesInvariableWordsAloneAndAcceptsAnExplicitForm() {
+        XCTAssertEqual(FRFormat.plural(3, "fois"), "3 fois")
+        XCTAssertEqual(FRFormat.plural(3, "prix"), "3 prix")
+        XCTAssertEqual(FRFormat.plural(3, "cheval", "chevaux"), "3 chevaux")
+        XCTAssertEqual(FRFormat.plural(-2, "tour"), "-2 tours", "the sign must not pick the singular")
+    }
+}

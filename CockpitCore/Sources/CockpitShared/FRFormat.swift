@@ -15,6 +15,27 @@ public enum FRFormat {
         }
     }
 
+    /// `1 tour`, `2 tours`, `0 tour` — French agrees the singular on 0 and 1, unlike
+    /// English. Pass an explicit plural for words that are not formed by adding an `s`
+    /// (`cheval` / `chevaux`), and an empty `singular` suffix for invariables.
+    ///
+    ///     FRFormat.plural(1, "pièce jointe")   // "1 pièce jointe"
+    ///     FRFormat.plural(3, "pièce jointe")   // "3 pièces jointes"
+    public static func plural(_ count: Int, _ singular: String, _ pluralForm: String? = nil) -> String {
+        let word = abs(count) < 2 ? singular : (pluralForm ?? defaultPlural(of: singular))
+        return "\(integer(count)) \(word)"
+    }
+
+    /// Adds an `s` to every word of the phrase, which covers the cases this app uses
+    /// (`pièce jointe` → `pièces jointes`). Words already ending in `s`, `x` or `z` are
+    /// invariable and left alone.
+    private static func defaultPlural(of phrase: String) -> String {
+        phrase.split(separator: " ", omittingEmptySubsequences: false).map { word -> Substring in
+            guard let last = word.last, !"sxz".contains(last) else { return word }
+            return word + "s"
+        }.joined(separator: " ")
+    }
+
     public static func integer(_ value: Int) -> String {
         let f = NumberFormatter()
         f.locale = locale

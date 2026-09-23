@@ -92,6 +92,19 @@ is to Anthropic's own quota endpoint, with the token Claude Code already stored 
 | Reveal & delete | Open the file in the Finder, or delete it (the copy in the backup folder is kept) |
 | Project discovery | Configured roots are scanned up to three levels deep for `.claude/` directories |
 
+### Sessions
+
+| What you see | Detail |
+|---|---|
+| Session browser | Every transcript under `~/.claude/projects`, full-text searchable (SQLite FTS5) across message text and tool input and output |
+| Filters & grouping | By project, date range, starred, with errors, and sub-agents shown or hidden; grouped by day or by project |
+| Full transcript | User and assistant turns, collapsible tool calls with their input and output, coloured diffs for file edits, thinking blocks, sub-agent transcripts expanded inline, compaction dividers |
+| Per-turn detail | Model, tokens and cost on every turn, an in-session find bar, and a health grade with its evidence |
+| Actions | Star, rename, hide, reveal the transcript in the Finder, export to Markdown or HTML, resume in the Terminal with `claude --resume` |
+| Activité tab | Hour-by-weekday heatmap, cost per day, tool mix with error rates, model mix |
+| Fichiers modifiés tab | Files edited across sessions, grouped by project and path, newest first |
+| Local index | An incremental SQLite index kept in Application Support, rebuilt from the transcripts on demand; nothing about a session ever leaves the machine |
+
 ## Gallery
 
 | | |
@@ -100,6 +113,10 @@ is to Anthropic's own quota endpoint, with the token Claude Code already stored 
 | The menu-bar panel | Local usage and cost |
 | ![RTK savings](docs/screenshots/rtk.png) | ![Skills](docs/screenshots/skills.png) |
 | RTK token savings | Skills, agents and commands |
+| ![Sessions](docs/screenshots/sessions.png) | ![Sessions activity](docs/screenshots/sessions-activity.png) |
+| The session browser and transcript detail | The Activité tab: heatmap, cost per day, tool and model mix |
+| ![Sessions edited files](docs/screenshots/sessions-edits.png) | |
+| The Fichiers modifiés tab | |
 
 ## Install
 
@@ -140,10 +157,16 @@ an error dialog.
 | Plugin cache | `~/.claude/plugins/cache/<org>/<plugin>/<version>/skills` | Read-only | None |
 | Backups | `~/.claude/backups/<timestamp>/` | Written before every mutation | None |
 | Scan cache | `~/Library/Application Support/ClaudeCockpit/scan-cache.json` | Read and written by the app | None |
+| Session index | `~/Library/Application Support/ClaudeCockpit/sessions.db` | Read and written by the app, built by reading transcripts incrementally | None |
 
 A few consequences worth stating plainly:
 
 - **No telemetry, no analytics, no crash reporting.** Nothing about you leaves the machine.
+- **Transcripts are also indexed into a local SQLite database.** The Sessions section reads
+  `~/.claude/projects` the same way local usage does, then writes what it finds into `sessions.db`
+  so search and analytics don't re-scan the whole archive on every open. Building and querying
+  that index is still read-only with respect to `~/.claude` — no transcript is ever modified —
+  and it makes no network call of its own.
 - **The token is never persisted or logged by the app.** It is read at refresh time, used for
   one request, and dropped. The keychain read goes through `/usr/bin/security`, the same tool
   Claude Code itself uses, so no extra authorization prompt appears.
@@ -195,6 +218,7 @@ ClaudeCockpit/
 ├── CockpitCore/                local SwiftPM package — all the logic, no UI
 │   ├── Sources/CockpitShared/  paths, French formatters, watchers, front matter
 │   ├── Sources/UsageKit/       transcript scanner, pricing, aggregation, insights
+│   ├── Sources/SessionsKit/    session index (SQLite/FTS5), transcript parser, health, export
 │   ├── Sources/QuotaKit/       credentials, usage API, pace math, rate limiting
 │   ├── Sources/RTKKit/         read-only SQLite repository and database watcher
 │   ├── Sources/SkillsKit/      resource model, three-level store, transfers, backups
@@ -208,7 +232,7 @@ ClaudeCockpit/
 ## Release
 
 ```bash
-./Scripts/release.sh 1.0.1
+./Scripts/release.sh 1.1.0
 ```
 
 The script regenerates the project, builds Release, stages the app through `ditto
@@ -240,6 +264,8 @@ landing page:
 - [x] Local usage dashboard with filters, breakdown, sessions and editable pricing
 - [x] RTK savings dashboard with live trace
 - [x] Skills, agents and commands across three levels, with transfer and plugin import
+- [x] Sessions section: full transcript browser and search, activity and edited-files
+      analytics, export and resume
 - [x] Menu-bar-only mode and launch at login
 - [x] Signed, notarized DMG with Sparkle auto-update
 - [ ] Hooks, MCP servers, `CLAUDE.md` and memory editing — full parity with SkillManager
