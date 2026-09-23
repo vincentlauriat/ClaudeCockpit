@@ -52,6 +52,11 @@ valid. Only a ≤200-character `text_preview` per message is denormalised for th
 FTS5 is fed selectively: user/assistant text, thinking, tool *inputs*, and the first 8 KB of
 each tool *output*. **Budget: `sessions.db` must stay under 300 MB for this corpus.**
 
+Attachment **bodies** are never stored, only counted into `SessionMessage.attachmentCount`:
+they carry entire injected skills and are the single most frequent line type, which is
+exactly the volume the 300 MB budget forbids. The "Afficher les lignes système" toggle
+therefore reveals `system` lines (hooks, compaction), not attachments.
+
 Noise lines are not indexed at all: `attachment` (13 150 lines against 2 469 user and 4 714
 assistant ones in a 40-file probe), `queue-operation`, `atis-latch`, `mode`,
 `permission-mode`, `last-prompt`, `file-history-*`. Attachments survive as a count on the
@@ -75,6 +80,10 @@ Tables (all keyed by stable ids, rebuildable from the transcripts at any time):
 - `edits(id PK, session_id, message_uuid, ts, tool[Edit|Write|MultiEdit|NotebookEdit],
   path, lines_added, lines_removed)` — from `tool_use` inputs of file tools.
 - `pr_links(session_id, number, url, repo, ts)`.
+- Sub-agent transcripts are exposed as sessions of their own, keyed by `agentId`, because
+  their lines carry the **parent's** `sessionId` and would otherwise collide with it
+  (verified across all 948 files). `SessionFilter.includeSubagents` keeps them out of the
+  main list by default; 575 of the 948 files are sub-agent transcripts.
 - `subagents(agent_id PK, session_id, parent_tool_use_id, file_path)`. The parent session
   is free: the real layout is `…/projects/<encoded>/<parentSessionId>/subagents/agent-*.jsonl`,
   so the parent is the containing directory name — no tool-result parsing. Only the finer
@@ -127,7 +136,8 @@ Section layout: left column (list) + detail, with a segmented header
 
 **List**: search field (FTS5, `Cmd+K` focuses it), filter chips (project, période, étoilées,
 avec erreurs, sous-agents masqués), grouping by day (default) or project, each row: title
-(ai-title → custom name → first prompt), project short path, time, duration, turns, cost,
+(nom saisi → ai-title → slug → premier prompt → préfixe d'id: a name the user typed
+must beat a generated one, or renaming a session would change nothing on screen), project short path, time, duration, turns, cost,
 health badge, live dot. Keyboard `j`/`k`.
 
 **Detail**: header (title editable, project, branch, Claude Code version, started/duration,
