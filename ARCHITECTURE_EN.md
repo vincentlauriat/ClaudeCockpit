@@ -267,6 +267,7 @@ the incremental scan state.
 |---|---|---|---|
 | `settings.launchAtLogin` | Bool | off | Mirrors the `SMAppService` registration |
 | `settings.menuBarOnly` | Bool | off | Activation policy: `.accessory` when on, `.regular` when off |
+| `settings.menuBarMeter` | String | `week` | Which quota the menu bar shows: `week`, `session` or `both` |
 | `settings.usageRefreshSeconds` | Int | 30 | Usage loop interval, floored at 10 |
 | `settings.rtkDBPath` | String | empty | Explicit rtk database path; empty means auto-resolve |
 | `settings.projectRoots` | String | empty | Newline-separated roots; empty means the defaults |
