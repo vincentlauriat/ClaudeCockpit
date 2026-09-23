@@ -27,14 +27,29 @@ final class SessionHealthTests: XCTestCase {
         XCTAssertEqual(SessionHealthRule.evaluate(.clean).grade, .a)
     }
 
-    /// The invariant the old scale broke: two sessions with the same error rate deserve the
-    /// same grade whether they ran 20 tool calls or 200.
+    /// The invariant the count-based scale broke, stated where it holds: once a rate is
+    /// measurable, size stops mattering. Ten times the calls at the same 5 % scores the same.
     func testSameErrorRateScoresTheSameWhateverTheSize() {
-        let small = evaluate(toolCalls: 20, toolErrors: 1, assistantTurns: 8)
-        let large = evaluate(toolCalls: 200, toolErrors: 10, assistantTurns: 800)
-        XCTAssertEqual(small.score, large.score)
-        XCTAssertEqual(small.grade, large.grade)
-        XCTAssertEqual(small.score, 88)  // 100 − (5 % − 2 %) × 400
+        let smaller = evaluate(toolCalls: 100, toolErrors: 5, assistantTurns: 40)
+        let larger = evaluate(toolCalls: 1_000, toolErrors: 50, assistantTurns: 4_000)
+        XCTAssertEqual(smaller.score, larger.score)
+        XCTAssertEqual(smaller.grade, larger.grade)
+        XCTAssertEqual(smaller.score, 88)  // 100 − (5 % − 2 %) × 400
+    }
+
+    /// The other half of the same idea. One failure out of three calls is not a 33 % error
+    /// rate — it is a sample too small for a rate to exist, so it must not be graded on one.
+    /// Below roughly eighty calls at this rate the per-failure ceiling governs, by design.
+    func testATinySampleIsNotGradedOnItsRate() {
+        let tiny = evaluate(toolCalls: 3, toolErrors: 1, assistantTurns: 4)
+        XCTAssertEqual(tiny.score, 97, "un seul échec ne coûte que trois points")
+        XCTAssertEqual(tiny.grade, .a)
+
+        // The same single failure among enough calls to mean something costs the same three
+        // points; it is the *rate* that has to grow for the penalty to grow.
+        XCTAssertEqual(evaluate(toolCalls: 10, toolErrors: 1, assistantTurns: 8).score, 97)
+        // And a rate measured on a real sample still bites.
+        XCTAssertEqual(evaluate(toolCalls: 300, toolErrors: 30, assistantTurns: 400).score, 70)
     }
 
     /// The case that motivated the change: a long session that shipped a release, scored F by
@@ -185,10 +200,11 @@ final class SessionHealthTests: XCTestCase {
         try await service.index()
 
         let health = try await service.health(sessionId: Line.session)
-        // Five tool calls with one failure is a 20 % rate, and one API error out of six turns
-        // is 17 %: both cap out. 100 − 30 − 25 − 15 (ends on an error) = 30.
-        XCTAssertEqual(health.score, 30)
-        XCTAssertEqual(health.grade, .f)
+        // One failure among five calls is too small a sample to read as a 20 % rate, so the
+        // per-failure ceiling holds it to 3 points. The API error, 1 of 6 turns, is a real
+        // 17 % and caps at 25. 100 − 3 − 25 − 15 (ends on an error) = 57.
+        XCTAssertEqual(health.score, 57)
+        XCTAssertEqual(health.grade, .d)
         XCTAssertTrue(health.evidence.contains("1 erreur d'outil sur 5 appels, soit 20,0 %."),
                       "\(health.evidence)")
         XCTAssertTrue(health.evidence.contains("1 erreur d'API sur 6 tours assistant, soit 16,7 %."),
@@ -225,9 +241,10 @@ final class SessionHealthTests: XCTestCase {
         let health = try await service.health(sessionId: Line.stuckSession)
         XCTAssertTrue(health.evidence.contains("Le même appel d'outil a échoué 3 fois de suite."),
                       "\(health.evidence)")
-        // Three calls, three failures: the rate caps the tool penalty. 100 − 30 − 10 = 60.
-        XCTAssertEqual(health.score, 60)
-        XCTAssertEqual(health.grade, .c)
+        // Three calls, three failures: the rate would cap at 30, but three failures cost at
+        // most 9. What the grade rests on is the loop itself. 100 − 9 − 10 = 81.
+        XCTAssertEqual(health.score, 81)
+        XCTAssertEqual(health.grade, .b)
     }
 
     /// The run in progress has to survive the chunk boundary: the same three failures spread

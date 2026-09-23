@@ -233,8 +233,8 @@ de sous-agents incluses, en Markdown ou en HTML autonome.
 
 **Cadence et suivi en direct.** L'indexation tourne sur son propre minuteur, décalé par rapport
 au scan de 30 s d'`UsageKit` pour que les deux ne parcourent pas la même archive au même tic ; un
-index complet de l'archive ci-dessus prend environ 25 s, un passage incrémental sans rien de
-nouveau à lire environ 0,16 s, et la base qui en résulte pèse environ 207 Mo. `CockpitStore` arme
+index complet de l'archive ci-dessus prend environ 20 s, un passage incrémental sans rien de
+nouveau à lire environ 0,16 s, et la base qui en résulte pèse environ 206 Mo. `CockpitStore` arme
 aussi un `RecursiveWatcher` — l'observateur récursif partagé adossé à FSEvents, dans
 `CockpitShared`, généralisé à partir de `RTKKit/DBWatcher.swift` — sur `~/.claude/projects`, car
 un `DirectoryWatcher` non récursif ne voit pas une ligne ajoutée à un fichier plusieurs
@@ -315,7 +315,7 @@ les mêmes valeurs.
 | Chemin | Contenu | Durée de vie |
 |---|---|---|
 | `~/Library/Application Support/ClaudeCockpit/scan-cache.json` | Par fichier, `(mtime, octets lus)` plus les métadonnées de session collectées | Réécrit seulement quand un scan a réellement lu de nouveaux octets ; vidé par un rescan complet |
-| `~/Library/Application Support/ClaudeCockpit/sessions.db` (+ `-wal`/`-shm`) | L'index Sessions : `sessions`, `messages`, `blocks` (offsets d'octets, pas les corps), `edits`, `subagents`, `pr_links`, et une table FTS5. Environ 207 Mo pour les 912 Mo d'archive de Vincent | Mis à jour de façon incrémentale par offset à chaque passage d'indexation ; « Reconstruire l'index » la supprime et la reconstruit, étoiles, noms et masquages reportés |
+| `~/Library/Application Support/ClaudeCockpit/sessions.db` (+ `-wal`/`-shm`) | L'index Sessions : `sessions`, `messages`, `blocks` (offsets d'octets, pas les corps), `edits`, `subagents`, `pr_links`, et une table FTS5. Environ 206 Mo pour les 912 Mo d'archive de Vincent | Mis à jour de façon incrémentale par offset à chaque passage d'indexation ; « Reconstruire l'index » la supprime et la reconstruit, étoiles, noms et masquages reportés |
 | `~/.claude/backups/<aaaaMMjj-HHmmss>/<niveau>/<type>/…` | Une copie de tout ce qu'une mutation s'apprête à toucher | Jamais purgé par l'application — supprimer les vieilles sauvegardes est la décision de l'utilisateur |
 
 L'application n'écrit nulle part ailleurs. Les transcriptions, les identifiants et la base de rtk

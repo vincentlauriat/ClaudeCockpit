@@ -23,17 +23,22 @@ final class HealthRegressionTests: XCTestCase {
         XCTAssertEqual(grade, .b)
     }
 
-    /// Same error rate, one twentieth of the size: the grade must not move. This is the
-    /// invariant the count-based rule broke.
+    /// Same error rate, a quarter of the size: the grade must not move. This is the invariant
+    /// the count-based rule broke.
+    ///
+    /// Both samples are large enough for a 5 % rate to mean something. The original short
+    /// case, 20 calls with 1 failure, sits below that: there the per-failure ceiling governs
+    /// instead, which is the point of `testATinySampleIsNotGradedOnItsRate`.
     func testSameRateAtDifferentSizesGradesTheSame() {
         let long = grade(SessionHealthCounters(
             toolCalls: 400, toolErrors: 20, apiErrors: 0, assistantTurns: 1000,
             abortedTurns: 0, repeatedFailures: 0, endedOnError: false))
         let short = grade(SessionHealthCounters(
-            toolCalls: 20, toolErrors: 1, apiErrors: 0, assistantTurns: 50,
+            toolCalls: 100, toolErrors: 5, apiErrors: 0, assistantTurns: 250,
             abortedTurns: 0, repeatedFailures: 0, endedOnError: false))
         XCTAssertEqual(long.0, short.0)
         XCTAssertEqual(long.1, short.1)
+        XCTAssertEqual(long.0, .b)
     }
 
     /// A session that called no tool has no rate to speak of and must not be penalised on a

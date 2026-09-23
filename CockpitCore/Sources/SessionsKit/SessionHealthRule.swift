@@ -17,6 +17,16 @@ extension SessionHealthRule {
         /// Slope past the floor — 5 % costs about 12 points, 10 % costs the cap.
         static let toolErrorSlope = 400.0
         static let toolErrorCap = 30.0
+        /// A second ceiling, in points per failure, so a rate measured on a handful of calls
+        /// cannot dominate the grade: one failure out of three is not a 33 % error rate, it is
+        /// a sample too small for a rate to exist.
+        ///
+        /// This is deliberately in tension with "same rate, same grade". That invariant was a
+        /// means to "the grade reflects health, not length", and it only holds where a rate is
+        /// measurable — past roughly eighty calls at 5 %, where the slope takes over from this
+        /// ceiling. Below that the ceiling governs, on purpose. Do not remove it thinking it
+        /// an oversight.
+        static let pointsPerToolError = 3.0
 
         /// API errors are rarer and worse, so the slope is steep: 0,5 % costs 5, 2,5 % caps.
         static let apiErrorSlope = 1000.0
@@ -50,8 +60,10 @@ extension SessionHealthRule {
         // floor of 1 would invent one out of nothing.
         if counters.toolCalls > 0, counters.toolErrors > 0 {
             let rate = Double(counters.toolErrors) / Double(counters.toolCalls)
-            score -= min(Penalty.toolErrorCap,
-                         max(0, (rate - Penalty.toolErrorFloor) * Penalty.toolErrorSlope))
+            let byRate = min(Penalty.toolErrorCap,
+                             max(0, (rate - Penalty.toolErrorFloor) * Penalty.toolErrorSlope))
+            let byCount = Penalty.pointsPerToolError * Double(counters.toolErrors)
+            score -= min(byRate, byCount)
             evidence.append("""
                 \(FRFormat.plural(counters.toolErrors, "erreur")) d'outil sur \
                 \(FRFormat.plural(counters.toolCalls, "appel")), soit \

@@ -214,8 +214,8 @@ self-contained HTML.
 
 **Cadence and live follow.** Indexing runs on its own timer, staggered against `UsageKit`'s 30 s
 scan so the two do not walk the same archive on the same tick; a full index of the archive above
-takes about 25 s, an incremental pass with nothing new to read about 0.16 s, and the resulting
-database is about 207 MB. `CockpitStore` also arms a `RecursiveWatcher` — the shared,
+takes about 20 s, an incremental pass with nothing new to read about 0.16 s, and the resulting
+database is about 206 MB. `CockpitStore` also arms a `RecursiveWatcher` — the shared,
 FSEvents-backed recursive watcher in `CockpitShared`, generalised from `RTKKit/DBWatcher.swift` —
 on `~/.claude/projects`, because a non-recursive `DirectoryWatcher` does not see a line appended
 to a file several directories down. A debounced file-system event triggers an incremental index
@@ -291,7 +291,7 @@ initializer, so a fresh install and an upgraded one read the same values.
 | Path | Content | Lifetime |
 |---|---|---|
 | `~/Library/Application Support/ClaudeCockpit/scan-cache.json` | Per-file `(mtime, bytesRead)` plus collected session metadata | Rewritten only when a scan actually read new bytes; cleared by a full rescan |
-| `~/Library/Application Support/ClaudeCockpit/sessions.db` (+ `-wal`/`-shm`) | The Sessions index: `sessions`, `messages`, `blocks` (byte offsets, not bodies), `edits`, `subagents`, `pr_links`, and an FTS5 table. About 207 MB for Vincent's 912 MB archive | Updated incrementally by byte offset on every index pass; "Reconstruire l'index" drops and rebuilds it, stars, names and hidden flags carried over |
+| `~/Library/Application Support/ClaudeCockpit/sessions.db` (+ `-wal`/`-shm`) | The Sessions index: `sessions`, `messages`, `blocks` (byte offsets, not bodies), `edits`, `subagents`, `pr_links`, and an FTS5 table. About 206 MB for Vincent's 912 MB archive | Updated incrementally by byte offset on every index pass; "Reconstruire l'index" drops and rebuilds it, stars, names and hidden flags carried over |
 | `~/.claude/backups/<yyyyMMdd-HHmmss>/<level>/<kind>/…` | A copy of everything a mutation is about to touch | Never pruned by the app — deleting old backups is the user's call |
 
 The app writes nowhere else. Transcripts, credentials and rtk's database are read-only, always.
