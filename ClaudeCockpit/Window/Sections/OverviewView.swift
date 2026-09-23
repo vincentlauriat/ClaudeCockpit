@@ -13,6 +13,14 @@ struct OverviewView: View {
     @Environment(CockpitStore.self) private var store
     @State private var now = Date()
 
+    /// Today's sessions, from the store's own dedicated query rather than from
+    /// `store.sessions`, which is the browser's filtered page.
+    @State private var todaySessions: [SessionRef] = []
+    /// When `todaySessions` was read — what "depuis minuit" and the relative time
+    /// of the latest session are measured against.
+    @State private var sessionsAsOf = Date()
+    @State private var sessionsLoaded = false
+
     private var rtkWeekSaved: Int {
         store.rtk?.last7Days.reduce(0) { $0 + $1.savedTokens } ?? 0
     }
@@ -30,6 +38,16 @@ struct OverviewView: View {
             .padding(24)
         }
         .onAppear { now = Date() }
+        // Re-read after every index pass: a session that started since the last one
+        // would otherwise never reach the card.
+        .task(id: store.sessionIndex.lastRun) {
+            let asOf = Date()
+            let rows = await store.todaySessions(now: asOf)
+            guard !Task.isCancelled else { return }
+            sessionsAsOf = asOf
+            todaySessions = rows
+            sessionsLoaded = true
+        }
     }
 
     // MARK: Header
@@ -131,19 +149,6 @@ struct OverviewView: View {
 
     // MARK: Sessions today
 
-    /// Today's sessions, read from the list the Sessions section already holds.
-    ///
-    /// `store.sessions` is the current page of `store.sessionFilter`, not the whole
-    /// archive: if the user narrows the filter in the Sessions browser, this card
-    /// narrows with it. That is deliberate — the store never keeps the full archive
-    /// in memory — but it means the count is "parmi les sessions listées".
-    private var todaySessions: [SessionRef] {
-        let start = Calendar.current.startOfDay(for: now)
-        return store.sessions
-            .filter { $0.lastTimestamp >= start }
-            .sorted { $0.lastTimestamp > $1.lastTimestamp }
-    }
-
     /// Sum of the costs the transcripts actually recorded, plus how many sessions
     /// carried no `cost-state` line at all. A missing cost is not zero.
     private var todayCost: (total: Double, missing: Int) {
@@ -160,10 +165,12 @@ struct OverviewView: View {
                     message: "Index des sessions indisponible : \(message)",
                     action: { Task { await store.indexSessions() } },
                     actionTitle: "Réindexer")
-            } else if store.sessions.isEmpty && store.sessionIndex.isRunning {
+            } else if !sessionsLoaded || (todaySessions.isEmpty && store.sessionIndex.isRunning) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Indexation des transcripts en cours…")
+                    Text(store.sessionIndex.isRunning
+                        ? "Indexation des transcripts en cours…"
+                        : "Lecture des sessions du jour…")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -195,7 +202,7 @@ struct OverviewView: View {
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("dernière activité \(FRFormat.relative(latest.lastTimestamp, now: now))")
+                    Text("dernière activité \(FRFormat.relative(latest.lastTimestamp, now: sessionsAsOf))")
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.slate)
                 }

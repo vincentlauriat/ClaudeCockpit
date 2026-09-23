@@ -383,22 +383,35 @@ struct SessionDetailView: View {
         scrollTarget = findMatches[findIndex]
     }
 
+    /// The query changed: rebuild the matches and jump to the first one.
     private func recomputeMatches() {
-        let query = findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
-            findMatches = []
-            findIndex = 0
-            return
+        findMatches = matchingIds()
+        findIndex = 0
+        scrollTarget = findMatches.first
+    }
+
+    /// A page landed: new matches may appear, but the reader is mid-navigation.
+    /// The current match is re-found by id so the counter does not jump back to 1.
+    private func refreshMatchesKeepingPosition() {
+        let current = findMatches.indices.contains(findIndex) ? findMatches[findIndex] : nil
+        findMatches = matchingIds()
+        if let current, let index = findMatches.firstIndex(of: current) {
+            findIndex = index
+        } else {
+            findIndex = min(findIndex, max(0, findMatches.count - 1))
         }
-        findMatches = renderableMessages
+    }
+
+    private func matchingIds() -> [String] {
+        let query = findQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        return renderableMessages
             .filter { message in
                 message.blocks.contains {
                     $0.text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
                 }
             }
             .map(\.id)
-        findIndex = 0
-        scrollTarget = findMatches.first
     }
 
     // MARK: - Transcript
@@ -440,8 +453,11 @@ struct SessionDetailView: View {
     /// The turn whose appearance asks for the next page. Set a little before the
     /// end so the reader never waits at the bottom; the footer button stays as the
     /// manual fallback when the whole page fits on screen at once.
+    ///
+    /// Taken from the unfiltered turns: the find filter can shrink the body to two
+    /// rows, and paging must still track where the reader is in the transcript.
     private var prefetchTriggerId: String? {
-        let shown = visibleMessages
+        let shown = renderableMessages
         guard shown.count > 20 else { return shown.last?.id }
         return shown[shown.count - 20].id
     }
@@ -484,7 +500,10 @@ struct SessionDetailView: View {
                     .controlSize(.small)
             }
             if total > 0 {
-                Text("\(FRFormat.integer(min(messages.count, total))) messages sur \(FRFormat.integer(total))")
+                // `sessionMessageCount` takes no `includeMeta`, so the total counts
+                // transcript lines, not the turns actually rendered. Labelled as
+                // lines rather than pretending the two denominators match.
+                Text("\(FRFormat.integer(messages.count)) lignes chargées sur \(FRFormat.integer(total))")
                     .font(.system(size: 10))
                     .monospacedDigit()
                     .foregroundStyle(Theme.mist)
@@ -535,7 +554,7 @@ struct SessionDetailView: View {
         messages.append(contentsOf: page)
         reachedEnd = page.count < Self.pageSize || (total > 0 && messages.count >= total)
         isLoading = false
-        if !findQuery.isEmpty { recomputeMatches() }
+        if !findQuery.isEmpty { refreshMatchesKeepingPosition() }
         resolveTarget()
     }
 

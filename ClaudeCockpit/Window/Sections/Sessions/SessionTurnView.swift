@@ -19,7 +19,9 @@ struct SessionTurnView: View {
     var highlighted = false
 
     @Environment(CockpitStore.self) private var store
-    @State private var thinkingExpanded = false
+    /// Keyed by block id: a turn can interleave several thinking blocks and each
+    /// one opens on its own.
+    @State private var expandedThinking: Set<String> = []
 
     /// True when a line is worth a turn of its own.
     ///
@@ -168,7 +170,7 @@ struct SessionTurnView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .thinking:
-            DisclosureGroup(isExpanded: $thinkingExpanded) {
+            DisclosureGroup(isExpanded: thinkingBinding(for: block.id)) {
                 Text(SessionsPalette.markdown(block.text))
                     .font(.system(size: 12))
                     .italic()
@@ -195,6 +197,14 @@ struct SessionTurnView: View {
                 .padding(.vertical, 4)
                 .background(Capsule().fill(Theme.cardFill))
         }
+    }
+
+    private func thinkingBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedThinking.contains(id) },
+            set: { isOpen in
+                if isOpen { expandedThinking.insert(id) } else { expandedThinking.remove(id) }
+            })
     }
 
     private func pairedResult(for block: ContentBlock) -> ContentBlock? {

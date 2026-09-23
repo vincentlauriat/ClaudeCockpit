@@ -392,8 +392,14 @@ struct SessionsBrowserView: View {
 
 // MARK: - Row
 
-/// One session in the list. Everything shown is already in the index, except the
-/// health grade, which is a cheap query fired when the row scrolls into view.
+/// One session in the list. Everything shown comes from the index, except the
+/// health grade, which is queried when the row scrolls into view.
+///
+/// `SessionHealthRule.evaluate` takes messages, so grading a session may cost a
+/// materialised transcript. If it turns out to, this badge must fall back to the
+/// `toolErrors` / `toolCalls` already carried by `SessionRef`: one query per
+/// visible row across a fast scroll would be exactly the eager read the spec
+/// forbids.
 private struct SessionRowView: View {
     let session: SessionRef
     let now: Date

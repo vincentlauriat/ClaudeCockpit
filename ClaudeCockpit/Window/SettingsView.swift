@@ -128,11 +128,9 @@ private struct GeneralSettingsTab: View {
     private var sessionsSection: some View {
         Section("Sessions") {
             Toggle("Indexer les transcripts", isOn: $sessionsIndexEnabled)
-                .onChange(of: sessionsIndexEnabled) { _, enabled in
-                    // The store only checks this flag when its loops start, so turning
-                    // indexing back on has to kick a pass off itself.
-                    if enabled { Task { await store.indexSessions() } }
-                }
+                // Restarts indexing and arms the FSEvents watcher, or stops both when the
+                // toggle goes off. The store reads the flag itself.
+                .onChange(of: sessionsIndexEnabled) { _, _ in store.sessionsIndexingDidChange() }
             Text("La section Sessions ne fonctionne qu'avec cet index. Il est reconstructible à tout moment et ne modifie jamais les transcripts.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.slate)

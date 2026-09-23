@@ -38,12 +38,19 @@ struct RecentEditsView: View {
         }
         .background(Theme.background)
         .task { projects = await store.sessionProjects() }
-        .task(id: projectCwd) {
+        // Keyed on the last index pass as well as on the project: a re-index adds edits
+        // to the feed, and the tab must not keep showing the list it arrived with.
+        .task(id: ReloadKey(project: projectCwd, indexedAt: store.sessionIndex.lastRun)) {
             edits = nil
             let fresh = await store.recentEdits(limit: 300, projectCwd: projectCwd)
             guard !Task.isCancelled else { return }
             edits = fresh
         }
+    }
+
+    private struct ReloadKey: Hashable {
+        let project: String?
+        let indexedAt: Date?
     }
 
     // MARK: Grouping

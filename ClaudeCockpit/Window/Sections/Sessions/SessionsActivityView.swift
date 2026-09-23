@@ -16,9 +16,15 @@ struct SessionsActivityView: View {
     @State private var projects: [ProjectCount] = []
     @State private var report: ActivityReport?
 
-    /// Frozen "now" for the relative ranges. Recomputing it inside `interval` would
-    /// change the reload key on every redraw and re-query the index endlessly.
+    /// "Now" for the relative ranges, held in state rather than recomputed inside
+    /// `interval`: a fresh `Date()` there would change the reload key on every redraw
+    /// and re-query the index endlessly. It is refreshed when the range changes and
+    /// after every index pass, so a tab left open overnight stops calling yesterday
+    /// "aujourd'hui".
     @State private var anchor = Date()
+    /// Forces a reload the interval alone cannot express — a re-index while the range
+    /// is `custom`, whose bounds do not move with `anchor`.
+    @State private var reloadToken = 0
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
     @State private var customEnd = Date()
 
@@ -44,6 +50,13 @@ struct SessionsActivityView: View {
         .background(Theme.background)
         .task { projects = await store.sessionProjects() }
         .task(id: reloadKey) { await load() }
+        // A pass over the archive can add turns, days and tools to the current range;
+        // without this the tab would keep showing the numbers it loaded on arrival.
+        .onChange(of: store.sessionIndex.lastRun) { _, _ in
+            anchor = Date()
+            reloadToken += 1
+            Task { projects = await store.sessionProjects() }
+        }
     }
 
     // MARK: Inputs
@@ -54,11 +67,14 @@ struct SessionsActivityView: View {
         let since: Date
         let until: Date
         let project: String?
+        let token: Int
     }
 
     private var reloadKey: ReloadKey {
         let interval = interval
-        return ReloadKey(since: interval.since, until: interval.until, project: projectCwd)
+        return ReloadKey(
+            since: interval.since, until: interval.until,
+            project: projectCwd, token: reloadToken)
     }
 
     private var interval: (since: Date, until: Date) {
