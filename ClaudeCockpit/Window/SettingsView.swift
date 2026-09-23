@@ -41,6 +41,7 @@ private struct GeneralSettingsTab: View {
     @Environment(CockpitStore.self) private var store
 
     @AppStorage(SettingsKey.menuBarOnly) private var menuBarOnly = false
+    @AppStorage(SettingsKey.menuBarMeter) private var menuBarMeter = MenuBarMeter.week.rawValue
     @AppStorage(SettingsKey.usageRefreshSeconds) private var refreshSeconds = 30
     @AppStorage(SettingsKey.currency) private var currency = "USD"
     @AppStorage(SettingsKey.eurRate) private var eurRate = 0.92
@@ -67,6 +68,19 @@ private struct GeneralSettingsTab: View {
                 Toggle("Barre de menus seulement (masquer l'icône du Dock)", isOn: $menuBarOnly)
                     .onChange(of: menuBarOnly) { _, newValue in store.setMenuBarOnly(newValue) }
                 Text("L'icône de la barre de menus reste visible dans tous les cas.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.slate)
+                Picker("Pourcentage affiché dans la barre de menus", selection: $menuBarMeter) {
+                    ForEach(MenuBarMeter.allCases) { meter in
+                        Text(meter.label).tag(meter.rawValue)
+                    }
+                }
+                .onChange(of: menuBarMeter) { _, raw in
+                    // The store keeps its own observable copy; a bare defaults
+                    // read would not redraw the menu bar until the next fetch.
+                    store.setMenuBarMeter(MenuBarMeter(rawValue: raw) ?? .week)
+                }
+                Text("La session de 5 h dit si vous pouvez continuer maintenant, la fenêtre de 7 jours si la semaine tient.")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.slate)
             }

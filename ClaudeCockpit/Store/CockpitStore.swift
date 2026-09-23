@@ -23,6 +23,26 @@ enum SourceState: Equatable {
 }
 
 /// Sidebar sections of the main window.
+/// Which Anthropic quota the menu bar shows.
+enum MenuBarMeter: String, CaseIterable, Identifiable, Sendable {
+    /// The 7-day window: does the week hold?
+    case week
+    /// The 5-hour session: can I keep working right now?
+    case session
+    /// Both, session first.
+    case both
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .week: return "Fenêtre de 7 jours"
+        case .session: return "Session de 5 h"
+        case .both: return "Les deux (5 h · 7 j)"
+        }
+    }
+}
+
 enum CockpitSection: String, CaseIterable, Identifiable {
     case overview, usage, sessions, quotas, rtk, skills, agents, commands, settings
     var id: String { rawValue }
@@ -142,10 +162,34 @@ final class CockpitStore {
         guard let session = quota?.session else { return nil }
         return UsageMath.projection(for: session, now: Date())
     }
-    /// Menu-bar label: weekly percent, or a dash before the first fetch.
+    /// Menu-bar label. Which meter it shows is a setting, because the two
+    /// windows answer different questions: the 5-hour session says whether you
+    /// can keep working right now, the 7-day window says whether the week holds.
+    ///
+    /// A dash stands for "not fetched yet" and is never rendered as 0 %.
     var menuBarTitle: String {
-        guard let week = quota?.week else { return "–" }
-        return "\(Int(week.utilization.rounded())) %"
+        guard let quota else { return "–" }
+        func percent(_ meter: Meter?) -> String? {
+            guard let meter else { return nil }
+            return "\(Int(meter.utilization.rounded())) %"
+        }
+        switch menuBarMeter {
+        case .week: return percent(quota.week) ?? "–"
+        case .session: return percent(quota.session) ?? "–"
+        case .both:
+            // Session first, then week, matching the order named in Settings.
+            let parts = [percent(quota.session), percent(quota.week)].compactMap { $0 }
+            return parts.isEmpty ? "–" : parts.joined(separator: " · ")
+        }
+    }
+
+    /// Read once into observable state: a bare `UserDefaults` read would not
+    /// redraw the menu bar when the setting changes.
+    private(set) var menuBarMeter: MenuBarMeter = .week
+
+    func setMenuBarMeter(_ meter: MenuBarMeter) {
+        menuBarMeter = meter
+        defaults.set(meter.rawValue, forKey: SettingsKey.menuBarMeter)
     }
     var currency: String { defaults.string(forKey: SettingsKey.currency) ?? "USD" }
     /// Converts a USD amount to the display currency.
@@ -181,6 +225,7 @@ final class CockpitStore {
     func start() {
         guard !loopsStarted else { return }
         loopsStarted = true
+        loadMenuBarMeter()
 
         // Housekeeping: drop skill backups older than 30 days (off the main thread).
         let paths = paths
@@ -438,6 +483,13 @@ final class CockpitStore {
 
     func setLaunchAtLogin(_ enabled: Bool) throws {
         if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+    }
+
+    /// Restores the saved choice; an unknown or absent value falls back to the
+    /// weekly window, which is what the app shipped with.
+    func loadMenuBarMeter() {
+        menuBarMeter = defaults.string(forKey: SettingsKey.menuBarMeter)
+            .flatMap(MenuBarMeter.init(rawValue:)) ?? .week
     }
 
     func setMenuBarOnly(_ enabled: Bool) {

@@ -85,6 +85,17 @@ enum SnapshotRunner {
             try? await Task.sleep(for: .seconds(0.5))
         }
         write(panel, to: dir.appendingPathComponent("panel.png"))
+
+        // The menu-bar label lives in the system menu bar and never appears in a
+        // window capture, so record what each setting would render against the
+        // live quota. This is the only way to check the three modes at once.
+        let saved = store.menuBarMeter
+        let rendered = MenuBarMeter.allCases.map { meter -> String in
+            store.setMenuBarMeter(meter)
+            return "\(meter.rawValue)\t\(store.menuBarTitle)"
+        }.joined(separator: "\n")
+        store.setMenuBarMeter(saved)
+        try? rendered.write(to: dir.appendingPathComponent("menubar.txt"), atomically: true, encoding: .utf8)
         panel.close()
 
         NSApp.terminate(nil)

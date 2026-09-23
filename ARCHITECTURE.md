@@ -290,6 +290,7 @@ ce sont les préférences et l'état du scan incrémental.
 |---|---|---|---|
 | `settings.launchAtLogin` | Bool | désactivé | Reflète l'enregistrement `SMAppService` |
 | `settings.menuBarOnly` | Bool | désactivé | Politique d'activation : `.accessory` si activé, `.regular` sinon |
+| `settings.menuBarMeter` | String | `week` | Quota affiché dans la barre de menus : `week`, `session` ou `both` |
 | `settings.usageRefreshSeconds` | Int | 30 | Intervalle de la boucle d'usage, plancher à 10 |
 | `settings.rtkDBPath` | String | vide | Chemin explicite de la base rtk ; vide = résolution automatique |
 | `settings.projectRoots` | String | vide | Racines séparées par des retours à la ligne ; vide = les valeurs par défaut |
