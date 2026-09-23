@@ -564,7 +564,16 @@ extension SessionStore {
     // MARK: - Housekeeping
 
     /// Drops sessions whose transcript is gone, so a deleted project stops showing up.
+    ///
+    /// Never acts on an empty walk. `TranscriptWalker.files(in:)` returns `[]` both when the
+    /// archive is genuinely empty and when the enumerator failed — a missing directory, an
+    /// unmounted volume, a permission the user has not granted yet — and the two are
+    /// indistinguishable here. Treating the second as the first would delete every session
+    /// row, taking `starred`, `custom_name` and `deleted_at` with it: the only data in this
+    /// database the user created and that no re-index can bring back. A stale list is
+    /// recoverable; those flags are not.
     private func forgetDisappearedFiles(keeping files: [TranscriptFile]) throws {
+        guard !files.isEmpty else { return }
         let known = Set(files.map(\.url.path))
         let stale = try rows("SELECT path, session_id FROM files").compactMap { row -> (String, String)? in
             guard let path = row[0] as? String, let sessionId = row[1] as? String else { return nil }

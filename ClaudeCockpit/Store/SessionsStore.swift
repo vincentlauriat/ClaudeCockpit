@@ -43,6 +43,9 @@ extension CockpitStore {
             let rows = try await service.listSessions(filter)
             guard !Task.isCancelled else { return }
             sessions = rows
+            // A page filled to the brim almost certainly has more behind it. Saying so is
+            // the point: a silent cut makes the archive look smaller than it is.
+            sessionsTruncated = rows.count >= filter.limit
         } catch {
             sessionsState = .failed(error.localizedDescription)
         }
@@ -56,8 +59,22 @@ extension CockpitStore {
             sessionId: sessionId, includeMeta: showSystem, offset: offset, limit: limit)) ?? []
     }
 
+    /// Counts exactly what `sessionMessages` returns.
+    ///
+    /// Reads the same setting on purpose: a total counted over a different set than the
+    /// pages would make the detail view believe it had reached the end early and silently
+    /// truncate the transcript.
     func sessionMessageCount(_ sessionId: String) async -> Int {
-        (try? await sessionService.messageCount(sessionId: sessionId)) ?? 0
+        let showSystem = UserDefaults.standard.bool(forKey: SettingsKey.sessionsShowSystemLines)
+        return (try? await sessionService.messageCount(sessionId: sessionId, includeMeta: showSystem)) ?? 0
+    }
+
+    /// Where a message sits in the sequence `sessionMessages` pages through, or `nil` when
+    /// the current filter excludes it. One indexed query, no transcript read.
+    func sessionMessageIndex(_ sessionId: String, messageId: String) async -> Int? {
+        let showSystem = UserDefaults.standard.bool(forKey: SettingsKey.sessionsShowSystemLines)
+        return try? await sessionService.messageIndex(
+            sessionId: sessionId, messageId: messageId, includeMeta: showSystem)
     }
 
     func subagentMessages(_ agentId: String) async -> [SessionMessage] {
@@ -95,6 +112,12 @@ extension CockpitStore {
 
     func sessionActivity(since: Date, until: Date, projectCwd: String? = nil) async -> ActivityReport {
         (try? await sessionService.activity(since: since, until: until, projectCwd: projectCwd)) ?? .empty
+    }
+
+    /// Shows more sessions. The listing is one indexed query, so widening the page is cheap;
+    /// it stays a deliberate step rather than an unbounded load of a very large archive.
+    func loadMoreSessions() async {
+        sessionFilter.limit += 200
     }
 
     // MARK: Mutations

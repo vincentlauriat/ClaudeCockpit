@@ -107,6 +107,9 @@ final class CockpitStore {
             sessionListTask = Task { [weak self] in await self?.refreshSessionList() }
         }
     }
+    /// True when the last listing filled its page exactly, so more sessions exist than the
+    /// list is showing. The view says so instead of pretending the archive ends there.
+    var sessionsTruncated = false
     private var sessionListTask: Task<Void, Never>?
     private var sessionsWatcher: RecursiveWatcher?
     private var sessionsWatchTask: Task<Void, Never>?

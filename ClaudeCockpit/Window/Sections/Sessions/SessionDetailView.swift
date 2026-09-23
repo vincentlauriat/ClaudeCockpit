@@ -500,10 +500,9 @@ struct SessionDetailView: View {
                     .controlSize(.small)
             }
             if total > 0 {
-                // `sessionMessageCount` takes no `includeMeta`, so the total counts
-                // transcript lines, not the turns actually rendered. Labelled as
-                // lines rather than pretending the two denominators match.
-                Text("\(FRFormat.integer(messages.count)) lignes chargées sur \(FRFormat.integer(total))")
+                // The total now counts the same set the pages return, so the two
+                // denominators match and this can honestly say "messages".
+                Text("\(FRFormat.integer(messages.count)) messages sur \(FRFormat.integer(total))")
                     .font(.system(size: 10))
                     .monospacedDigit()
                     .foregroundStyle(Theme.mist)
@@ -560,10 +559,9 @@ struct SessionDetailView: View {
 
     /// Scrolls to the message the browser asked for, or says it is not loaded yet.
     ///
-    /// The index gives no row offset for a message id, so the only honest options
-    /// are "it is already loaded" or "page forward until it is". Paging from zero
-    /// on every search hit of a 40 000-message session is not one of them, hence
-    /// the explicit button.
+    /// Paging from zero on every search hit of a very long session would be wasteful, so
+    /// the jump stays behind an explicit button; `chaseTarget` then uses the index to stop
+    /// as soon as the message is in.
     private func resolveTarget() {
         guard let target = targetMessageId else {
             targetMissing = false
@@ -579,13 +577,24 @@ struct SessionDetailView: View {
         }
     }
 
+    /// Pages forward until the requested message is loaded.
+    ///
+    /// Two things keep this from spinning. It asks the index where the message sits, so it
+    /// stops as soon as enough pages are in rather than trusting `contains` alone. And it
+    /// breaks when a pass loaded nothing: `loadNextPage` returns immediately while another
+    /// load is in flight, and without that check the loop would keep re-entering it on the
+    /// main actor, doing no work and freezing the window.
     private func chaseTarget() async {
         guard let target = targetMessageId, !isChasingTarget else { return }
         isChasingTarget = true
-        while !reachedEnd && !messages.contains(where: { $0.id == target }) {
+        defer { isChasingTarget = false }
+        let targetIndex = await store.sessionMessageIndex(session.id, messageId: target)
+        while !reachedEnd, !messages.contains(where: { $0.id == target }) {
+            if let targetIndex, messages.count > targetIndex { break }
+            let loadedBefore = messages.count
             await loadNextPage()
+            guard messages.count > loadedBefore else { break }
         }
-        isChasingTarget = false
         resolveTarget()
     }
 }

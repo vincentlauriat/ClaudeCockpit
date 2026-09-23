@@ -236,6 +236,20 @@ struct SessionsBrowserView: View {
                         }
                     }
                 }
+                if store.sessionsTruncated {
+                    Section {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(FRFormat.plural(store.sessions.count, "session")) affichée\(store.sessions.count > 1 ? "s" : "") · il y en a d'autres")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.slate)
+                            Button("Afficher 200 sessions de plus") {
+                                Task { await store.loadMoreSessions() }
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
             }
             .listStyle(.inset)
             .onKeyPress(keys: ["j", "k"]) { press in
@@ -401,14 +415,13 @@ struct SessionsBrowserView: View {
 
 // MARK: - Row
 
-/// One session in the list. Everything shown comes from the index, except the
-/// health grade, which is queried when the row scrolls into view.
+/// One session in the list. Everything shown, the health grade included, comes from the
+/// `SessionRef` the list already holds — no row does any I/O of its own.
 ///
-/// `SessionHealthRule.evaluate` takes messages, so grading a session may cost a
-/// materialised transcript. If it turns out to, this badge must fall back to the
-/// `toolErrors` / `toolCalls` already carried by `SessionRef`: one query per
-/// visible row across a fast scroll would be exactly the eager read the spec
-/// forbids.
+/// This used to query `store.sessionHealth` per row as it scrolled into view. That call
+/// is a pure function of the same stored counters `SessionRef.healthGrade` is derived
+/// from, so it could never return anything else, and it serialised every visible row
+/// behind the indexing actor during a rebuild.
 private struct SessionRowView: View {
     let session: SessionRef
     let now: Date
@@ -416,7 +429,6 @@ private struct SessionRowView: View {
     let onSelectHit: (SearchHit) -> Void
 
     @Environment(CockpitStore.self) private var store
-    @State private var health: SessionHealth?
 
     private var isLive: Bool {
         now.timeIntervalSince(session.lastTimestamp) < SessionsPalette.liveWindow
@@ -449,7 +461,6 @@ private struct SessionRowView: View {
             }
         }
         .padding(.vertical, 4)
-        .task(id: session.id) { health = await store.sessionHealth(session.id) }
     }
 
     private var titleLine: some View {
@@ -484,9 +495,7 @@ private struct SessionRowView: View {
                     .help("Transcript de sous-agent")
             }
             Spacer(minLength: 4)
-            if let health {
-                HealthBadge(grade: health.grade, compact: true)
-            }
+            HealthBadge(grade: session.healthGrade, compact: true)
         }
     }
 
