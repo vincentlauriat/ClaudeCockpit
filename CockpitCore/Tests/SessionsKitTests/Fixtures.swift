@@ -62,6 +62,21 @@ enum Line {
     static let session = "sess-1"
     static let cwd = "/Users/test/DevApps/Demo"
     static let agentId = "ahelper-0123456789abcdef"
+    static let stuckSession = "sess-stuck"
+
+    /// One assistant turn running the same failing command, plus the error it gets back.
+    /// Repeating it is what a stuck agent looks like to the health counter.
+    static func stuckFailure(index: Int) -> [String] {
+        [
+            assistant(uuid: "stuck-a\(index)", at: TestClock.offset(index * 2),
+                      blocks: [toolUse(id: "stuck-t\(index)", name: "Bash",
+                                       input: ["command": "swift build"])],
+                      messageId: "msg-stuck-\(index)", sessionId: stuckSession),
+            toolResult(uuid: "stuck-u\(index)", at: TestClock.offset(index * 2 + 1),
+                       toolUseId: "stuck-t\(index)", text: "error: build failed",
+                       isError: true, sessionId: stuckSession),
+        ]
+    }
 
     static let iso: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -255,6 +270,17 @@ enum TestClock {
 // MARK: - A complete demo session
 
 extension TranscriptFixture {
+
+    /// A session that keeps running the same command and keeps getting the same error.
+    @discardableResult
+    func writeStuckSession(failures: Int = 3) throws -> String {
+        let path = "\(Line.project)/\(Line.stuckSession).jsonl"
+        var lines = [Line.user(uuid: "stuck-start", text: "Répare le build", at: TestClock.offset(0),
+                               sessionId: Line.stuckSession)]
+        for index in 0..<failures { lines += Line.stuckFailure(index: index) }
+        try write(lines, to: path)
+        return path
+    }
 
     /// One session covering every line kind and block kind the spec calls out, plus the
     /// sub-agent transcript spawned from it.

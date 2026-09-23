@@ -8,9 +8,10 @@ dans
 ## Vue d'ensemble
 
 Claude Cockpit est une application macOS native (Swift 5.9, SwiftUI sur une coque AppKit,
-macOS 14+) qui lit quatre sources indépendantes et les réunit en un seul endroit : les jauges de
-quota Anthropic, les transcriptions locales de Claude Code, la base de données d'économies de
-rtk, et l'arborescence des skills, agents et commandes.
+macOS 14+) qui lit cinq sources indépendantes et les réunit en un seul endroit : les jauges de
+quota Anthropic, les transcriptions locales de Claude Code — lues en direct pour l'usage local et
+indexées dans une base locale pour la section Sessions —, la base de données d'économies de rtk,
+et l'arborescence des skills, agents et commandes.
 
 Le découpage qui gouverne tout le reste est **la logique dans un package, l'interface dans la
 cible applicative**. `CockpitCore` est un package SwiftPM local où aucun framework d'interface
@@ -42,12 +43,14 @@ flowchart TD
     end
 
     subgraph core["CockpitCore — package SwiftPM local"]
-        SHARED["CockpitShared<br/>ClaudePaths · FRFormat<br/>DirectoryWatcher · Frontmatter"]
+        SHARED["CockpitShared<br/>ClaudePaths · FRFormat<br/>DirectoryWatcher · RecursiveWatcher · Frontmatter"]
         USAGE["UsageKit<br/>UsageService · TranscriptScanner<br/>UsageAggregator · InsightEngine"]
+        SESSIONS["SessionsKit<br/>SessionService · SessionStore<br/>TranscriptParser · TranscriptWalker"]
         QUOTA["QuotaKit<br/>QuotaService · CredentialStore<br/>QuotaAPI · UsageMath"]
         RTK["RTKKit<br/>RTKService · TrackingRepository<br/>DBWatcher"]
         SKILLS["SkillsKit<br/>ResourceStore · ProjectScanner"]
         USAGE --> SHARED
+        SESSIONS --> SHARED
         QUOTA --> SHARED
         RTK --> SHARED
         SKILLS --> SHARED
@@ -55,6 +58,7 @@ flowchart TD
 
     subgraph data["Sources de données"]
         JSONL[("~/.claude/projects/**/*.jsonl")]
+        SDB[("sessions.db")]
         KC[["Trousseau<br/>Claude Code-credentials"]]
         API(["api.anthropic.com<br/>/api/oauth/usage"])
         DB[("history.db de rtk")]
@@ -62,6 +66,7 @@ flowchart TD
     end
 
     STORE --> USAGE
+    STORE --> SESSIONS
     STORE --> QUOTA
     STORE --> RTK
     STORE --> SKILLS
@@ -69,6 +74,8 @@ flowchart TD
     UPD --> FEED(["appcast.xml"])
 
     USAGE --> JSONL
+    SESSIONS --> JSONL
+    SESSIONS --> SDB
     QUOTA --> KC
     QUOTA --> API
     RTK --> DB
@@ -81,6 +88,7 @@ flowchart TD
 |---|---|---|---|
 | `CockpitShared` | Tout ce sur quoi les autres kits doivent s'accorder : où vivent les fichiers, comment s'écrivent les nombres en français, comment surveiller un répertoire, comment lire un front matter | `ClaudePaths`, `FRFormat`, `DirectoryWatcher`, `Frontmatter` | Foundation |
 | `UsageKit` | Transforme les transcriptions de Claude Code en tous les chiffres qu'affichent les écrans d'usage | `UsageService`, `TranscriptScanner`, `UsageAggregator`, `UsageSnapshot`, `UsageEvent`, `PricingSettings`, `InsightEngine`, `SessionSummary`, `BreakdownDimension` | `CockpitShared` |
+| `SessionsKit` | Indexe les transcriptions de Claude Code dans une base SQLite/FTS5 locale et répond à tout ce que demande la section Sessions : liste, pagination d'une transcription, recherche plein texte, activité, éditions récentes, santé | `SessionService`, `SessionStore`, `TranscriptParser`, `TranscriptWalker`, `SessionHealthRule`, `SessionExporter`, `SessionRef`, `SessionMessage`, `ContentBlock`, `SessionFilter`, `ActivityReport` | `CockpitShared`, SQLite.swift |
 | `QuotaKit` | Lit le jeton OAuth, appelle l'endpoint de jauges d'Anthropic, applique la politique de limitation, projette le rythme | `QuotaService`, `CredentialStore`, `QuotaAPI`, `Meter`, `GaugeSnapshot`, `PaceProjection`, `UsageMath`, `PaceSentence` | `CockpitShared` |
 | `RTKKit` | Accès en lecture seule à la base SQLite de rtk, plus un observateur qui se déclenche quand rtk écrit | `RTKService`, `TrackingRepository`, `DBWatcher`, `RTKSnapshot`, `CommandRecord`, `TotalsStat`, `DayStat`, `CommandStat` | `CockpitShared`, SQLite.swift |
 | `SkillsKit` | L'arborescence de ressources à trois niveaux, son inventaire, et chaque mutation avec sa sauvegarde | `ResourceStore`, `ProjectScanner`, `ClaudeResource`, `PluginResource`, `SkillsInventory`, `ResourceKind`, `ResourceLevel`, `SkillsError` | `CockpitShared` |
@@ -187,6 +195,60 @@ assainis avant de devenir des noms de fichiers.
 **Cadence :** un `DirectoryWatcher` sur les six répertoires globaux et de bibliothèque, plus un
 rafraîchissement manuel. Les mutations rafraîchissent l'inventaire elles-mêmes.
 
+### Sessions — l'archive de transcriptions indexée
+
+Sessions lit la même arborescence que lit `UsageKit` —
+`~/.claude/projects/<cwd encodé>/<session>.jsonl` plus `…/subagents/agent-*.jsonl` — mais dans un
+autre but : non pas des chiffres agrégés, une archive de transcriptions consultable et
+recherchable. `TranscriptWalker` parcourt l'arborescence de façon incrémentale, reprenant chaque
+fichier à l'octet où il s'était arrêté la fois précédente, exactement comme le scanner
+d'`UsageKit`. `TranscriptParser` transforme chaque ligne ajoutée en un `ParsedLine` typé, et
+`SessionStore` insère le résultat dans `sessions.db`, une base SQLite à
+`~/Library/Application Support/ClaudeCockpit/sessions.db` dotée d'une table virtuelle FTS5 pour
+la recherche.
+
+**L'index stocke des références, pas l'archive.** Copier chaque message et chaque corps d'outil
+dans la base multiplierait le corpus au lieu de l'indexer, donc la table `blocks` porte
+`(file_id, byte_offset, byte_len)` et le texte affiché est relu dans la transcription à la
+demande — les transcriptions ne font que grandir, donc un offset reste valide pour toujours.
+Seul un court `text_preview` par message est dénormalisé pour la liste. FTS5 n'est alimenté que
+sélectivement : le texte utilisateur et assistant, le thinking, les entrées d'outils, et les
+premiers kilo-octets de chaque sortie d'outil. Les corps des pièces jointes ne sont jamais
+stockés, seulement comptés dans `attachmentCount`, parce qu'ils portent des skills entiers
+injectés et sont le type de ligne le plus fréquent du corpus.
+
+Les transcriptions de sous-agents portent le `sessionId` de leur **parent** sur chaque ligne,
+donc elles sont indexées comme des sessions à part entière, sous la clé `agentId` du sous-agent,
+avec `parentSessionId` pointant vers la session qui l'a lancée. `SessionFilter.includeSubagents`
+les tient hors de la liste principale par défaut. Sur l'archive de Vincent — 987 sessions
+indexées (986 fichiers de transcription, 912 Mo lus) — 96,5 % des transcriptions de sous-agents
+ont pu être reliées à l'appel d'outil `Agent` exact qui les avait lancées ; les autres s'indexent
+et s'affichent quand même, simplement sans cette référence croisée précise.
+
+`SessionHealthRule` note une session de A à F à partir de compteurs déjà tenus à jour par
+l'indexeur — taux d'erreur des outils, erreurs d'API, tours avortés ou interrompus, échecs
+d'outil identiques répétés, une session qui s'est terminée sur une erreur — si bien que calculer
+une note ne relit jamais une transcription. `SessionExporter` rend une session, transcriptions
+de sous-agents incluses, en Markdown ou en HTML autonome.
+
+**Cadence et suivi en direct.** L'indexation tourne sur son propre minuteur, décalé par rapport
+au scan de 30 s d'`UsageKit` pour que les deux ne parcourent pas la même archive au même tic ; un
+index complet de l'archive ci-dessus prend environ 25 s, un passage incrémental sans rien de
+nouveau à lire environ 0,16 s, et la base qui en résulte pèse environ 207 Mo. `CockpitStore` arme
+aussi un `RecursiveWatcher` — l'observateur récursif partagé adossé à FSEvents, dans
+`CockpitShared`, généralisé à partir de `RTKKit/DBWatcher.swift` — sur `~/.claude/projects`, car
+un `DirectoryWatcher` non récursif ne voit pas une ligne ajoutée à un fichier plusieurs
+répertoires plus bas. Un événement du système de fichiers, anti-rebondi, déclenche un passage
+d'indexation incrémental, et le store Sessions publie le changement pour qu'une session ouverte
+s'auto-complète et que la liste affiche un badge « live ».
+
+**Les mutations ne touchent que l'index.** Mettre une étoile, renommer ou masquer une session
+n'écrit que dans `sessions.db` ; la transcription sur le disque n'est jamais touchée. Masquer
+pose un `deleted_at` et la ligne sort de toutes les listes jusqu'à la prochaine reconstruction
+complète, qui est aussi le seul moyen de se remettre d'une base corrompue — `index(full: true)`
+la supprime et la reconstruit, en reportant les étoiles, les noms personnalisés et les sessions
+masquées, puisqu'ils ne vivent nulle part ailleurs.
+
 ## Modèle de concurrence
 
 La règle est unidirectionnelle : **les services travaillent hors de l'acteur principal, le store
@@ -196,17 +258,20 @@ publie le résultat dessus.**
 |---|---|---|
 | `CockpitStore` | `@MainActor @Observable` | Tout ce que SwiftUI observe vit ici et nulle part ailleurs |
 | `UsageService`, `TranscriptScanner` | `actor` | Sérialise les scans et protège le cache incrémental |
+| `SessionService` | `actor` | Sérialise les passages d'indexation et chaque lecture/écriture sur `sessions.db`, exactement comme `UsageService` sérialise les scans |
 | `QuotaService` | `actor` | Sérialise les lectures réseau et détient l'état de limitation |
 | `ResourceStore` | `actor` | Sérialise les mutations du système de fichiers, deux transferts ne peuvent pas s'entrelacer |
 | `TrackingRepository` | structure `Sendable` | Ne porte aucun état hors l'URL de la base ; chaque requête ouvre sa propre connexion |
 | `RTKService` | classe finale `@unchecked Sendable` | Détient l'observateur ; le store appelle son snapshot depuis une tâche détachée |
 | `DirectoryWatcher`, `DBWatcher` | `@unchecked Sendable` | Adossés à DispatchSource, publient via `AsyncStream<Void>` |
-| Snapshots (`UsageSnapshot`, `GaugeSnapshot`, `RTKSnapshot`, `SkillsInventory`) | `Sendable` immuables | Traversent la frontière d'acteur sans problème de copie |
+| `RecursiveWatcher` | `@unchecked Sendable` | Adossé à FSEvents, récursif ; `CockpitStore` l'arme sur `~/.claude/projects` pour le suivi en direct de Sessions |
+| Snapshots (`UsageSnapshot`, `GaugeSnapshot`, `RTKSnapshot`, `SkillsInventory`, `SessionRef`, `ActivityReport`) | `Sendable` immuables | Traversent la frontière d'acteur sans problème de copie |
 
 `CockpitStore.start()` lance les boucles de rafraîchissement une seule fois et conserve leurs
-`Task`. Il y en a cinq : l'usage sur son intervalle, les quotas sur un intervalle de trois
-minutes, rtk sur le flux de l'observateur, un sondage de repli plus lent pour rtk, et les skills
-sur l'observateur de répertoires. Elles sont écrites en
+`Task`. Il y en a six : l'usage sur son intervalle, les sessions sur leur propre intervalle
+décalé plus le flux du `RecursiveWatcher` pour le suivi en direct, les quotas sur un intervalle
+de trois minutes, rtk sur le flux de l'observateur, un sondage de repli plus lent pour rtk, et
+les skills sur l'observateur de répertoires. Elles sont écrites en
 `while !Task.isCancelled { await refresh…(); try? await Task.sleep(…) }` plutôt qu'en `Timer`, ce
 qui contourne le piège de mode de boucle d'exécution qui mord les applications de barre de menus
 (voir Pièges).
@@ -231,6 +296,11 @@ ce sont les préférences et l'état du scan incrémental.
 | `settings.pricingJSON` | String | — | Les quatre tarifs par famille de modèle, sérialisés |
 | `settings.currency` | String | `USD` | Devise d'affichage |
 | `settings.eurRate` | Double | 0,92 | Conversion USD vers EUR utilisée quand la devise est EUR |
+| `settings.sessionsIndexEnabled` | Bool | activé | Indexation ou non des transcriptions pour la section Sessions |
+| `sessions.showSystemLines` | Bool | désactivé | Bascule « Afficher les lignes système » dans la transcription |
+| `sessions.grouping` | String | `day` | Regroupement de la liste de sessions : `day` ou `project` |
+| `sessions.selectedId` | String | — | Dernière session ouverte |
+| `sessions.tab` | String | `browser` | Dernier onglet Sessions sélectionné : browser, activity ou edits |
 | `panel.section.limits` | Bool | true | État de repli d'une section du panneau |
 | `panel.section.today` | Bool | true | État de repli d'une section du panneau |
 | `panel.section.savings` | Bool | true | État de repli d'une section du panneau |
@@ -245,6 +315,7 @@ les mêmes valeurs.
 | Chemin | Contenu | Durée de vie |
 |---|---|---|
 | `~/Library/Application Support/ClaudeCockpit/scan-cache.json` | Par fichier, `(mtime, octets lus)` plus les métadonnées de session collectées | Réécrit seulement quand un scan a réellement lu de nouveaux octets ; vidé par un rescan complet |
+| `~/Library/Application Support/ClaudeCockpit/sessions.db` (+ `-wal`/`-shm`) | L'index Sessions : `sessions`, `messages`, `blocks` (offsets d'octets, pas les corps), `edits`, `subagents`, `pr_links`, et une table FTS5. Environ 207 Mo pour les 912 Mo d'archive de Vincent | Mis à jour de façon incrémentale par offset à chaque passage d'indexation ; « Reconstruire l'index » la supprime et la reconstruit, étoiles, noms et masquages reportés |
 | `~/.claude/backups/<aaaaMMjj-HHmmss>/<niveau>/<type>/…` | Une copie de tout ce qu'une mutation s'apprête à toucher | Jamais purgé par l'application — supprimer les vieilles sauvegardes est la décision de l'utilisateur |
 
 L'application n'écrit nulle part ailleurs. Les transcriptions, les identifiants et la base de rtk
@@ -286,6 +357,7 @@ complète assez peu coûteuse pour valoir la peine à chaque changement.
 |---|---|
 | `CockpitSharedTests` | Dérivation des chemins y compris `CLAUDE_CONFIG_DIR`, formatage français, lecture du front matter |
 | `UsageKitTests` | Scan de transcriptions sur fixtures JSONL, relectures incrémentales, déduplication, calcul des coûts, bornes de plages de dates, agrégation |
+| `SessionsKitTests` | Analyse des lignes de transcription pour chaque type de ligne, indexation incrémentale et reprise, déduplication, requêtes du store (filtres de liste, extraits FTS, éditions récentes, buckets d'activité), notation de santé, exporteurs, et un benchmark sur le corpus réel complet |
 | `QuotaKitTests` | Lecture des identifiants dans les deux formes JSON et gestion de l'expiration, analyse de la jauge, calcul du rythme, et la politique de limitation pilotée par une horloge injectée |
 | `RTKKitTests` | Requêtes du repository contre un `history.db` de fixture construit dans un répertoire temporaire, validation de schéma, tics de l'observateur |
 | `SkillsKitTests` | Inventaire sur un `HOME` temporaire, transfert et import, création de sauvegarde, refus des chemins hors du dossier personnel |

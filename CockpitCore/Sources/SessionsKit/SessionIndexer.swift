@@ -157,7 +157,12 @@ extension SessionStore {
         try transaction {
             if startOffset == 0 && isKnown { try purge(sessionId: file.sessionId) }
             try ensureSession(file)
-            let sequence = try ingest(complete, file: file, firstSequence: nextSequence)
+            try rememberFile(file, offset: startOffset, mtime: mtime, size: size,
+                             inode: inode, nextSeq: nextSequence)
+            let fileId = Self.int(try scalar("SELECT id FROM files WHERE path = ?", [path]))
+            let sequence = try ingest(
+                complete, file: file, fileId: fileId,
+                fileOffset: startOffset, firstSequence: nextSequence)
             try rememberFile(file, offset: newOffset, mtime: mtime, size: size,
                              inode: inode, nextSeq: sequence)
             try recomputeAggregates(sessionId: file.sessionId)
@@ -169,6 +174,7 @@ extension SessionStore {
 
     /// Accumulates what only becomes known once the whole chunk has been read.
     private struct SessionFacts {
+        var failures = SessionHealthRule.FailureRun()
         var cwd: String?
         var gitBranch: String?
         var version: String?
@@ -179,27 +185,41 @@ extension SessionStore {
         var costLinesRemoved: Int?
     }
 
+    /// - Parameters:
+    ///   - fileId: row id of the transcript in `files`, stamped on every message so its line
+    ///     can be found again.
+    ///   - fileOffset: where `data` starts in that file, so line offsets come out absolute.
     /// - Returns: the sequence number the next chunk should start from.
-    private func ingest(_ data: Data, file: TranscriptFile, firstSequence: Int) throws -> Int {
+    private func ingest(
+        _ data: Data, file: TranscriptFile, fileId: Int, fileOffset: Int64, firstSequence: Int
+    ) throws -> Int {
         let parser = TranscriptParser()
         var sequence = firstSequence
         var facts = SessionFacts()
+        facts.failures = try loadFailureRun(sessionId: file.sessionId)
         // `tool_result` blocks name only the call they answer, never the tool. Carrying the
         // name across from the `tool_use` that precedes them turns the tool mix and the error
         // rate into plain `GROUP BY tool_name` queries.
         var toolNames: [String: String] = [:]
+        /// `toolUseId` → hash of the call's name and input, for the repeated-failure counter.
+        var identities: [String: Int64] = [:]
 
         var start = data.startIndex
         while start < data.endIndex {
             let end = data[start...].firstIndex(of: UInt8(ascii: "\n")) ?? data.endIndex
+            let lineStart = start
             defer { start = end < data.endIndex ? data.index(after: end) : data.endIndex }
-            guard end > start else { continue }
-            let line = Data(data[start..<end])
+            guard end > lineStart else { continue }
+            let line = Data(data[lineStart..<end])
+            let location = LineLocation(
+                fileId: fileId,
+                offset: fileOffset + Int64(lineStart - data.startIndex),
+                length: line.count)
 
             switch parser.parse(line) {
             case .message(let message), .compactBoundary(let message):
-                try store(message, file: file, sequence: sequence,
-                          facts: &facts, toolNames: &toolNames)
+                try store(message, file: file, sequence: sequence, at: location,
+                          facts: &facts, toolNames: &toolNames, identities: &identities)
                 sequence += 1
 
             case .aiTitle(_, let title):
@@ -233,9 +253,17 @@ extension SessionStore {
         return sequence
     }
 
+    /// Where one JSONL line sits on disk.
+    struct LineLocation {
+        let fileId: Int
+        let offset: Int64
+        let length: Int
+    }
+
     private func store(
-        _ message: ParsedMessage, file: TranscriptFile, sequence: Int,
-        facts: inout SessionFacts, toolNames: inout [String: String]
+        _ message: ParsedMessage, file: TranscriptFile, sequence: Int, at location: LineLocation,
+        facts: inout SessionFacts, toolNames: inout [String: String],
+        identities: inout [String: Int64]
     ) throws {
         if let cwd = message.cwd { facts.cwd = cwd }
         if let branch = message.gitBranch { facts.gitBranch = branch }
@@ -260,6 +288,7 @@ extension SessionStore {
             message.systemSubtype, message.model, message.apiMessageId, isDuplicate ? 1 : 0,
             message.inputTokens, message.outputTokens,
             message.cacheReadTokens, message.cacheCreationTokens,
+            location.fileId, location.offset, location.length,
         ])
         guard db.changes > 0 else { return }  // uuid already stored for this session
         let messageId = db.lastInsertRowid
@@ -271,6 +300,8 @@ extension SessionStore {
                 switch block.kind {
                 case .toolUse:
                     if let name = block.toolName { toolNames[toolUseId] = name }
+                    identities[toolUseId] = SessionHealthRule.identityHash(
+                        toolName: block.toolName, input: block.body)
                 case .toolResult:
                     // The map covers the common case; the query is the fallback for a result
                     // whose call landed in an earlier chunk of the same transcript.
@@ -282,6 +313,9 @@ extension SessionStore {
                             WHERE tool_use_id = ? AND kind = 'toolUse' LIMIT 1
                             """, [toolUseId]) as? String
                     }
+                    // A result whose call landed in an earlier chunk has no identity in
+                    // memory; the run simply restarts rather than pairing on a guess.
+                    facts.failures.record(failed: block.isError, identity: identities[toolUseId])
                 default:
                     break
                 }
@@ -321,6 +355,16 @@ extension SessionStore {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// The run of identical failures still in progress, as the previous chunk left it.
+    private func loadFailureRun(sessionId: String) throws -> SessionHealthRule.FailureRun {
+        guard let row = try rows("""
+            SELECT repeated_failures, failure_run, failure_key FROM sessions WHERE id = ?
+            """, [sessionId]).first
+        else { return SessionHealthRule.FailureRun() }
+        return SessionHealthRule.FailureRun(
+            longest: Self.int(row[0]), current: Self.int(row[1]), key: row[2] as? Int64)
+    }
+
     private func apply(_ facts: SessionFacts, to sessionId: String) throws {
         // COALESCE keeps whatever a previous chunk already established when this one is silent.
         try run("""
@@ -330,10 +374,13 @@ extension SessionStore {
                 cc_version = COALESCE(?, cc_version),
                 slug = COALESCE(?, slug),
                 ai_title = COALESCE(?, ai_title),
-                cost_state_usd = COALESCE(?, cost_state_usd)
+                cost_state_usd = COALESCE(?, cost_state_usd),
+                repeated_failures = ?, failure_run = ?, failure_key = ?
             WHERE id = ?
             """, [facts.cwd, facts.gitBranch, facts.version, facts.slug,
-                  facts.aiTitle, facts.costUSD, sessionId])
+                  facts.aiTitle, facts.costUSD,
+                  facts.failures.longest, facts.failures.current, facts.failures.key,
+                  sessionId])
     }
 
     private func ensureSession(_ file: TranscriptFile) throws {
@@ -407,6 +454,28 @@ extension SessionStore {
             SELECT COALESCE(SUM(lines_added), 0), COALESCE(SUM(lines_removed), 0)
             FROM edits WHERE session_id = ?
             """, [sessionId]).first
+        let abortedTurns = Self.int(try scalar(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? AND is_aborted = 1", [sessionId]))
+        // "Ended on an error" is about the closing assistant turn, which is the one the
+        // reader was left looking at.
+        let endedOnError = Self.int(try scalar("""
+            SELECT is_api_error FROM messages
+            WHERE session_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1
+            """, [sessionId])) != 0
+
+        // Tokens per model, recomputed with the rest so a re-read can never double them.
+        try run("DELETE FROM session_models WHERE session_id = ?", [sessionId])
+        try run("""
+            INSERT INTO session_models
+                (session_id, model, turns, input_tokens, output_tokens, cache_read, cache_create)
+            SELECT session_id, model, COUNT(*),
+                   COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                   COALESCE(SUM(cache_read), 0), COALESCE(SUM(cache_create), 0)
+            FROM messages
+            WHERE session_id = ? AND role = 'assistant' AND model IS NOT NULL AND is_duplicate = 0
+            GROUP BY session_id, model
+            """, [sessionId])
+
         let firstPrompt = try scalar("""
             SELECT b.body FROM blocks b JOIN messages m ON b.message_id = m.id
             WHERE m.session_id = ? AND m.role = 'user' AND m.is_meta = 0
@@ -419,14 +488,16 @@ extension SessionStore {
                 first_ts = ?, last_ts = ?, user_turns = ?, assistant_turns = ?,
                 tool_calls = ?, tool_errors = ?, api_errors = ?,
                 input_tokens = ?, output_tokens = ?, cache_read = ?, cache_create = ?,
-                lines_added = ?, lines_removed = ?, first_prompt = ?
+                lines_added = ?, lines_removed = ?, first_prompt = ?,
+                aborted_turns = ?, ended_on_error = ?
             WHERE id = ?
             """, [
                 span?[0] as? Double, span?[1] as? Double, userTurns, assistantTurns,
                 Self.int(toolCounts?[0]), Self.int(toolCounts?[1]), apiErrors,
                 input, output, cacheRead, cacheCreate,
                 Self.int(editTotals?[0]), Self.int(editTotals?[1]),
-                firstPrompt.map { Self.preview($0) }, sessionId,
+                firstPrompt.map { Self.preview($0) },
+                abortedTurns, endedOnError ? 1 : 0, sessionId,
             ])
     }
 
@@ -522,8 +593,9 @@ extension SessionStore {
             INSERT OR IGNORE INTO messages
                 (uuid, session_id, parent_uuid, seq, ts, role, is_sidechain, is_meta,
                  is_compact_boundary, is_api_error, is_aborted, system_subtype, model,
-                 api_message_id, is_duplicate, input_tokens, output_tokens, cache_read, cache_create)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 api_message_id, is_duplicate, input_tokens, output_tokens, cache_read,
+                 cache_create, file_id, line_offset, line_len)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """)
     }
 

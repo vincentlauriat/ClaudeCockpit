@@ -66,7 +66,7 @@ struct SessionTurnView: View {
                 blockView(block)
             }
             if message.attachmentCount > 0 {
-                Label("\(FRFormat.integer(message.attachmentCount)) pièces jointes",
+                Label(FRFormat.plural(message.attachmentCount, "pièce jointe"),
                       systemImage: "paperclip")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.slate)

@@ -86,7 +86,16 @@ public struct TranscriptParser: Sendable {
         "bridge-session", "agent-name",
     ]
 
-    public init() {}
+    /// Largest body this parser emits per block.
+    ///
+    /// The indexer uses ``ContentBlock/storedBodyCap`` (8 KB), which is what keeps the
+    /// database from growing with the size of tool outputs. The display path re-parses the
+    /// same line with ``ContentBlock/bodyCap`` (2 MB) to fill in what was cut.
+    public let bodyCap: Int
+
+    public init(bodyCap: Int = ContentBlock.storedBodyCap) {
+        self.bodyCap = bodyCap
+    }
 
     /// - Parameter data: one line, without its trailing newline.
     public func parse(_ data: Data) -> ParsedLine {
@@ -211,7 +220,7 @@ public struct TranscriptParser: Sendable {
         if let content = message?["content"] {
             if let text = content as? String {
                 return text.isEmpty ? [] : [ParsedBlock(
-                    index: 0, kind: .text, body: Self.capped(text),
+                    index: 0, kind: .text, body: capped(text),
                     toolName: nil, toolUseId: nil, isError: false,
                     fileEdit: nil, imageMediaType: nil, agentName: nil)]
             }
@@ -228,7 +237,7 @@ public struct TranscriptParser: Sendable {
         }
         if let text = systemContent as? String, !text.isEmpty {
             return [ParsedBlock(
-                index: 0, kind: .text, body: Self.capped(text),
+                index: 0, kind: .text, body: capped(text),
                 toolName: nil, toolUseId: nil, isError: false,
                 fileEdit: nil, imageMediaType: nil, agentName: nil)]
         }
@@ -243,14 +252,14 @@ public struct TranscriptParser: Sendable {
         case "text":
             let text = object["text"] as? String ?? ""
             guard !text.isEmpty else { return nil }
-            return ParsedBlock(index: index, kind: .text, body: Self.capped(text),
+            return ParsedBlock(index: index, kind: .text, body: capped(text),
                                toolName: nil, toolUseId: nil, isError: false,
                                fileEdit: nil, imageMediaType: nil, agentName: nil)
 
         case "thinking":
             let text = object["thinking"] as? String ?? ""
             guard !text.isEmpty else { return nil }
-            return ParsedBlock(index: index, kind: .thinking, body: Self.capped(text),
+            return ParsedBlock(index: index, kind: .thinking, body: capped(text),
                                toolName: nil, toolUseId: nil, isError: false,
                                fileEdit: nil, imageMediaType: nil, agentName: nil)
 
@@ -258,7 +267,7 @@ public struct TranscriptParser: Sendable {
             let name = object["name"] as? String ?? "?"
             let input = object["input"] as? [String: Any] ?? [:]
             return ParsedBlock(
-                index: index, kind: .toolUse, body: Self.capped(Self.prettyJSON(input)),
+                index: index, kind: .toolUse, body: capped(Self.prettyJSON(input)),
                 toolName: name, toolUseId: object["id"] as? String, isError: false,
                 fileEdit: Self.fileEdit(tool: name, input: input),
                 imageMediaType: nil,
@@ -271,7 +280,7 @@ public struct TranscriptParser: Sendable {
                 references[toolUseId] = reference
             }
             return ParsedBlock(
-                index: index, kind: .toolResult, body: Self.capped(text),
+                index: index, kind: .toolResult, body: capped(text),
                 toolName: nil, toolUseId: toolUseId,
                 isError: object["is_error"] as? Bool ?? false,
                 fileEdit: nil, imageMediaType: nil, agentName: nil)
@@ -410,11 +419,19 @@ public struct TranscriptParser: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Keeps one block under ``ContentBlock/bodyCap`` bytes, marking what it cut.
-    static func capped(_ text: String) -> String {
-        guard text.utf8.count > ContentBlock.bodyCap else { return text }
-        let prefix = String(decoding: text.utf8.prefix(ContentBlock.bodyCap), as: UTF8.self)
-        return prefix + ContentBlock.truncationMarker
+    /// Keeps one block under ``bodyCap`` bytes, marking what it cut.
+    func capped(_ text: String) -> String { Self.capped(text, cap: bodyCap) }
+
+    static func capped(_ text: String, cap: Int) -> String {
+        guard text.utf8.count > cap else { return text }
+        // Cutting mid-character would leave a replacement glyph in the middle of an accented
+        // French word, so the cut backs up to the nearest character boundary.
+        var cut = text.utf8.index(text.utf8.startIndex, offsetBy: cap)
+        while cut > text.utf8.startIndex, String.Index(cut, within: text) == nil {
+            cut = text.utf8.index(before: cut)
+        }
+        let boundary = String.Index(cut, within: text) ?? text.startIndex
+        return String(text[..<boundary]) + ContentBlock.truncationMarker
     }
 
     static func int(_ value: Any?) -> Int? {

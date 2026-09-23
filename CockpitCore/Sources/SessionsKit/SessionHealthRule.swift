@@ -1,106 +1,101 @@
 // SessionsKit — see docs/superpowers/specs/2026-09-23-sessions-viewer.md
 import Foundation
+import CockpitShared
 
 extension SessionHealthRule {
 
-    /// How much each kind of trouble costs, out of a starting score of 100.
+    /// What each kind of trouble costs, out of a starting score of 100.
+    ///
+    /// Errors are weighed as **rates**, not counts. Measured on the real corpus, the error
+    /// rate barely moves with session length — 3,9 % on short sessions, 2,9 % on long ones —
+    /// while the raw count grows with it. Scoring the count therefore graded duration rather
+    /// than health: a 1 281-turn session that shipped a release came out F while an 8-turn
+    /// session came out A.
     enum Penalty {
-        static let apiError = 15
-        static let endedOnError = 10
-        static let toolError = 3
-        static let toolErrorCap = 30
-        static let aborted = 10
+        /// Tool errors below this rate cost nothing: a few failures are how a tool gets used.
+        static let toolErrorFloor = 0.02
+        /// Slope past the floor — 5 % costs about 12 points, 10 % costs the cap.
+        static let toolErrorSlope = 400.0
+        static let toolErrorCap = 30.0
+
+        /// API errors are rarer and worse, so the slope is steep: 0,5 % costs 5, 2,5 % caps.
+        static let apiErrorSlope = 1000.0
+        static let apiErrorCap = 25.0
+
+        static let endedOnError = 15
+        /// One interrupted turn is ordinary; a habit of interrupting is not.
+        static let aborted = 5
+        static let abortedShare = 0.02
+        static let abortedExtra = 5
+
         static let repeatedFailure = 10
         /// A call has to fail this many times in a row before it counts as a loop.
         static let repeatThreshold = 3
     }
 
-    /// Grades one session from its messages alone — no model, no network, same answer every time.
+    /// Grades one session from counters the indexer already holds — no model, no network, no
+    /// transcript read, and the same answer every time.
     ///
-    /// Evidence is written in French, in the order the rules fire, so the popover reads as a
-    /// short explanation rather than a list of counters.
-    static func evaluateRules(messages: [SessionMessage], session: SessionRef) -> SessionHealth {
-        var score = 100
+    /// Taking counters rather than messages is what lets the list show a badge per row: a
+    /// grade computed from the transcript would mean materialising every session on screen,
+    /// which is exactly the greedy read the spec rules out.
+    ///
+    /// Evidence is written in French and cites the rate next to the count, so the sentence
+    /// explains the grade instead of seeming to contradict it.
+    static func evaluateCounters(_ counters: SessionHealthCounters) -> SessionHealth {
+        var score = 100.0
         var evidence: [String] = []
 
-        let apiErrors = messages.filter(\.isApiError).count
-        if apiErrors > 0 {
-            score -= Penalty.apiError * apiErrors
-            evidence.append(apiErrors == 1
-                ? "Une erreur d'API pendant la session."
-                : "\(apiErrors) erreurs d'API pendant la session.")
+        // A session that called no tool has no tool error rate to speak of; dividing by a
+        // floor of 1 would invent one out of nothing.
+        if counters.toolCalls > 0, counters.toolErrors > 0 {
+            let rate = Double(counters.toolErrors) / Double(counters.toolCalls)
+            score -= min(Penalty.toolErrorCap,
+                         max(0, (rate - Penalty.toolErrorFloor) * Penalty.toolErrorSlope))
+            evidence.append("""
+                \(FRFormat.plural(counters.toolErrors, "erreur")) d'outil sur \
+                \(FRFormat.plural(counters.toolCalls, "appel")), soit \
+                \(FRFormat.percent(rate, digits: 1)).
+                """)
         }
 
-        let toolErrors = messages.reduce(0) { total, message in
-            total + message.blocks.filter { $0.kind == .toolResult && $0.isError }.count
-        }
-        if toolErrors > 0 {
-            score -= min(Penalty.toolErrorCap, Penalty.toolError * toolErrors)
-            let calls = session.toolCalls > 0 ? session.toolCalls : toolErrors
-            evidence.append("\(toolErrors) appel\(toolErrors > 1 ? "s" : "") d'outil en échec sur \(calls).")
+        if counters.apiErrors > 0 {
+            let turns = max(counters.assistantTurns, counters.apiErrors)
+            let rate = Double(counters.apiErrors) / Double(turns)
+            score -= min(Penalty.apiErrorCap, rate * Penalty.apiErrorSlope)
+            evidence.append("""
+                \(FRFormat.plural(counters.apiErrors, "erreur")) d'API sur \
+                \(FRFormat.plural(turns, "tour")) assistant, soit \
+                \(FRFormat.percent(rate, digits: 1)).
+                """)
         }
 
-        if let last = messages.last(where: { $0.role == .assistant }), endsBadly(last) {
-            score -= Penalty.endedOnError
+        if counters.endedOnError {
+            score -= Double(Penalty.endedOnError)
             evidence.append("La session se termine sur une erreur.")
         }
 
-        let aborted = messages.filter(\.isAborted).count
-        if aborted > 0 {
-            score -= Penalty.aborted
-            evidence.append(aborted == 1
-                ? "Un tour a été interrompu."
-                : "\(aborted) tours ont été interrompus.")
+        if counters.abortedTurns > 0 {
+            let turns = max(counters.assistantTurns, counters.abortedTurns)
+            let share = Double(counters.abortedTurns) / Double(turns)
+            score -= Double(Penalty.aborted)
+            if share > Penalty.abortedShare { score -= Double(Penalty.abortedExtra) }
+            let word = counters.abortedTurns > 1 ? "interrompus" : "interrompu"
+            evidence.append("""
+                \(FRFormat.plural(counters.abortedTurns, "tour")) \(word) sur \
+                \(FRFormat.plural(turns, "tour")) assistant.
+                """)
         }
 
-        let repeats = longestFailureRun(in: messages)
-        if repeats >= Penalty.repeatThreshold {
-            score -= Penalty.repeatedFailure
-            evidence.append("Le même appel d'outil a échoué \(repeats) fois de suite.")
+        if counters.repeatedFailures >= Penalty.repeatThreshold {
+            score -= Double(Penalty.repeatedFailure)
+            evidence.append(
+                "Le même appel d'outil a échoué \(counters.repeatedFailures) fois de suite.")
         }
 
         if evidence.isEmpty { evidence.append("Aucune erreur détectée.") }
-        let clamped = min(100, max(0, score))
+        let clamped = min(100, max(0, Int(score.rounded())))
         return SessionHealth(grade: grade(for: clamped), score: clamped, evidence: evidence)
-    }
-
-    /// The closing assistant turn failed: the API itself errored, or its last tool call did.
-    private static func endsBadly(_ message: SessionMessage) -> Bool {
-        message.isApiError || message.blocks.contains { $0.isError }
-    }
-
-    /// The longest run of consecutive tool results that both failed and answered the same
-    /// call — the signature of an agent retrying something that cannot work.
-    ///
-    /// Identity is the tool's name plus its input, so `Bash` failing on two different commands
-    /// is not a loop while the same command failing four times is.
-    static func longestFailureRun(in messages: [SessionMessage]) -> Int {
-        var inputs: [String: String] = [:]  // toolUseId → tool name + input
-        for message in messages {
-            for block in message.blocks where block.kind == .toolUse {
-                guard let toolUseId = block.toolUseId else { continue }
-                inputs[toolUseId] = "\(block.toolName ?? "?")\u{1}\(block.text)"
-            }
-        }
-
-        var longest = 0
-        var current = 0
-        var previous: String?
-        for message in messages {
-            for block in message.blocks where block.kind == .toolResult {
-                guard block.isError, let toolUseId = block.toolUseId,
-                      let identity = inputs[toolUseId]
-                else {
-                    current = 0
-                    previous = nil
-                    continue
-                }
-                current = identity == previous ? current + 1 : 1
-                previous = identity
-                longest = max(longest, current)
-            }
-        }
-        return longest
     }
 
     static func grade(for score: Int) -> HealthGrade {
@@ -110,6 +105,55 @@ extension SessionHealthRule {
         case 60..<75: return .c
         case 40..<60: return .d
         default: return .f
+        }
+    }
+
+    // MARK: - Counting, for the indexer
+
+    /// The identity of a tool call: its name and its input. Two failures count as a repeat
+    /// only when both match, so `Bash` failing on two different commands is not a loop while
+    /// the same command failing four times is.
+    ///
+    /// Hashed with FNV-1a rather than `Hasher`, whose seed changes between processes: this
+    /// value is written to the database and compared against what a later run computes.
+    static func identityHash(toolName: String?, input: String) -> Int64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ bytes: some Sequence<UInt8>) {
+            for byte in bytes {
+                hash ^= UInt64(byte)
+                hash = hash &* 0x0000_0100_0000_01b3
+            }
+        }
+        mix((toolName ?? "?").utf8)
+        mix(CollectionOfOne(UInt8(0)))
+        // A prefix is enough to tell two calls apart and keeps the cost off the hot path.
+        mix(input.utf8.prefix(identityPrefix))
+        return Int64(bitPattern: hash)
+    }
+
+    static let identityPrefix = 4096
+
+    /// Tracks the current run of identical consecutive failures while a transcript is read.
+    ///
+    /// A transcript arrives in chunks, possibly across launches of the app, so the run in
+    /// progress is stored next to the longest one seen and resumed on the following pass.
+    struct FailureRun: Equatable {
+        var longest = 0
+        var current = 0
+        var key: Int64?
+
+        /// - Parameters:
+        ///   - failed: whether this tool result is an error.
+        ///   - identity: the identity of the call it answers, `nil` when it cannot be paired.
+        mutating func record(failed: Bool, identity: Int64?) {
+            guard failed, let identity else {
+                current = 0
+                key = nil
+                return
+            }
+            current = (identity == key) ? current + 1 : 1
+            key = identity
+            longest = max(longest, current)
         }
     }
 }

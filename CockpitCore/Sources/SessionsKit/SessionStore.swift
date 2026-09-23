@@ -16,7 +16,7 @@ final class SessionStore {
     let db: Connection
 
     /// Bumped whenever the schema changes shape; a mismatch triggers a full rebuild.
-    static let schemaVersion = 1
+    static let schemaVersion = 3
 
     init(databaseURL: URL) throws {
         self.databaseURL = databaseURL
@@ -57,7 +57,8 @@ final class SessionStore {
             );
 
             CREATE TABLE IF NOT EXISTS files (
-                path TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
                 session_id TEXT NOT NULL,
                 is_subagent INTEGER NOT NULL DEFAULT 0,
                 byte_offset INTEGER NOT NULL DEFAULT 0,
@@ -93,7 +94,15 @@ final class SessionStore {
                 lines_removed INTEGER NOT NULL DEFAULT 0,
                 parent_session_id TEXT,
                 starred INTEGER NOT NULL DEFAULT 0,
-                deleted_at REAL
+                deleted_at REAL,
+                -- Health counters, kept up to date by the indexer so that grading a session
+                -- never reads its transcript. `failure_run`/`failure_key` are the run of
+                -- identical failures still in progress, resumed when the file grows.
+                aborted_turns INTEGER NOT NULL DEFAULT 0,
+                ended_on_error INTEGER NOT NULL DEFAULT 0,
+                repeated_failures INTEGER NOT NULL DEFAULT 0,
+                failure_run INTEGER NOT NULL DEFAULT 0,
+                failure_key INTEGER
             );
             CREATE INDEX IF NOT EXISTS sessions_last_ts ON sessions(last_ts DESC);
             CREATE INDEX IF NOT EXISTS sessions_cwd ON sessions(cwd);
@@ -119,7 +128,13 @@ final class SessionStore {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read INTEGER NOT NULL DEFAULT 0,
                 cache_create INTEGER NOT NULL DEFAULT 0,
-                attachment_count INTEGER NOT NULL DEFAULT 0
+                attachment_count INTEGER NOT NULL DEFAULT 0,
+                -- Where this message's JSONL line sits, so a block capped at
+                -- `ContentBlock.storedBodyCap` can have its full text read back on demand.
+                -- All the blocks of a message share one line, so the offsets live here.
+                file_id INTEGER NOT NULL DEFAULT 0,
+                line_offset INTEGER NOT NULL DEFAULT 0,
+                line_len INTEGER NOT NULL DEFAULT 0
             );
             CREATE UNIQUE INDEX IF NOT EXISTS messages_session_uuid ON messages(session_id, uuid);
             CREATE INDEX IF NOT EXISTS messages_session_seq ON messages(session_id, seq);
@@ -156,6 +171,19 @@ final class SessionStore {
             CREATE INDEX IF NOT EXISTS edits_ts ON edits(ts DESC);
             CREATE INDEX IF NOT EXISTS edits_session ON edits(session_id);
 
+            -- Tokens per model, so the view can apply the pricing the user edits in Réglages
+            -- instead of a cost frozen at indexing time.
+            CREATE TABLE IF NOT EXISTS session_models (
+                session_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                turns INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read INTEGER NOT NULL DEFAULT 0,
+                cache_create INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, model)
+            );
+
             CREATE TABLE IF NOT EXISTS pr_links (
                 session_id TEXT NOT NULL,
                 number INTEGER NOT NULL,
@@ -174,9 +202,11 @@ final class SessionStore {
             CREATE INDEX IF NOT EXISTS subagents_session ON subagents(session_id);
             """)
 
-        // External-content FTS over `blocks`: the searchable text is block bodies, and
-        // duplicating a gigabyte of transcript into the index is not an option. The price is
-        // that deletes are manual — see `purge(sessionId:)`.
+        // External-content FTS over `blocks`: the index holds no copy of the text, it reads
+        // `blocks.body` back for `snippet()`. That is the cheapest arrangement there is —
+        // dropping the column would only force the same bytes into the FTS table instead.
+        // What keeps the index small is the 8 KB cap on `body`, not where the text lives.
+        // The price of external content is that deletes are manual — see `purge(sessionId:)`.
         try execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS blocks_fts USING fts5(
                 body,
@@ -281,6 +311,7 @@ final class SessionStore {
             """, [sessionId])
         try run("DELETE FROM messages WHERE session_id = ?", [sessionId])
         try run("DELETE FROM edits WHERE session_id = ?", [sessionId])
+        try run("DELETE FROM session_models WHERE session_id = ?", [sessionId])
         try run("DELETE FROM pr_links WHERE session_id = ?", [sessionId])
         // The blocks just deleted carried the `subagent_id` that made an `Agent` card
         // openable. Clearing the pairing puts these sub-agents back in front of
@@ -291,7 +322,9 @@ final class SessionStore {
                 first_ts = NULL, last_ts = NULL, user_turns = 0, assistant_turns = 0,
                 tool_calls = 0, tool_errors = 0, api_errors = 0,
                 input_tokens = 0, output_tokens = 0, cache_read = 0, cache_create = 0,
-                lines_added = 0, lines_removed = 0, first_prompt = NULL
+                lines_added = 0, lines_removed = 0, first_prompt = NULL,
+                aborted_turns = 0, ended_on_error = 0,
+                repeated_failures = 0, failure_run = 0, failure_key = NULL
             WHERE id = ?
             """, [sessionId])
     }

@@ -112,7 +112,7 @@ struct ActivityHeatmapCard: View {
                 SectionLabel(text: "Activité par heure")
                 Spacer()
                 if peak > 0 {
-                    Text("pic : \(FRFormat.integer(peak)) tours")
+                    Text("pic : " + FRFormat.plural(peak, "tour"))
                         .font(.system(size: 11))
                         .foregroundStyle(Theme.slate)
                         .monospacedDigit()
@@ -201,7 +201,7 @@ struct ActivityHeatmapCard: View {
         switch turns {
         case 0: count = "aucun tour"
         case 1: count = "1 tour"
-        default: count = "\(FRFormat.integer(turns)) tours"
+        default: count = FRFormat.plural(turns, "tour")
         }
         return "\(day) \(hour) h · \(count)"
     }
@@ -465,7 +465,7 @@ struct ActivityModelShare: View {
                         .font(.system(size: 11))
                         .monospacedDigit()
                         .foregroundStyle(Theme.slate)
-                    Text("\(FRFormat.integer(row.turns)) tours")
+                    Text(FRFormat.plural(row.turns, "tour"))
                         .font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.ink)

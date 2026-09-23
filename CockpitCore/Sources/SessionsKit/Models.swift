@@ -37,6 +37,13 @@ public struct SessionRef: Identifiable, Hashable, Sendable, Codable {
     public let parentSessionId: String?
     public let isStarred: Bool
     public let prLinks: [PRLink]
+    /// Derived from the counters the indexer stores, so the badge in the list and the verdict
+    /// in the detail can never disagree. Never optional: a session with nothing wrong is an A.
+    public let healthGrade: HealthGrade
+    /// Tokens consumed per model. ``costStateUSD`` is authoritative when Claude Code wrote a
+    /// `cost-state` line, which it does for about one session in ten; everywhere else the
+    /// view prices these tokens with the rates configured in Réglages.
+    public let tokensByModel: [String: ModelTokens]
 
     public var duration: TimeInterval { lastTimestamp.timeIntervalSince(firstTimestamp) }
     public var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens }
@@ -66,7 +73,9 @@ public struct SessionRef: Identifiable, Hashable, Sendable, Codable {
         linesRemoved: Int = 0,
         parentSessionId: String? = nil,
         isStarred: Bool = false,
-        prLinks: [PRLink] = []
+        prLinks: [PRLink] = [],
+        healthGrade: HealthGrade = .a,
+        tokensByModel: [String: ModelTokens] = [:]
     ) {
         self.id = id
         self.projectDir = projectDir
@@ -91,6 +100,8 @@ public struct SessionRef: Identifiable, Hashable, Sendable, Codable {
         self.parentSessionId = parentSessionId
         self.isStarred = isStarred
         self.prLinks = prLinks
+        self.healthGrade = healthGrade
+        self.tokensByModel = tokensByModel
     }
 }
 
@@ -213,7 +224,11 @@ public struct ContentBlock: Identifiable, Hashable, Sendable, Codable {
     /// For an `Agent`/`Task` `tool_use` whose sub-agent transcript was found.
     public let subagentId: String?
 
-    /// Largest body stored for one block; beyond it the text is cut and marked.
+    /// Largest body kept in the index for one block. Beyond it the text is cut and marked,
+    /// and the full version is read back from the transcript when the block is displayed.
+    /// This cap is what keeps the database growing slower than the corpus.
+    public static let storedBodyCap = 8 * 1024
+    /// Largest body ever materialised in memory, even when read back from the transcript.
     public static let bodyCap = 2 * 1024 * 1024
     public static let truncationMarker = "\n… [tronqué]"
 
@@ -366,6 +381,44 @@ public enum HealthGrade: String, Sendable, Codable, CaseIterable {
     case a = "A", b = "B", c = "C", d = "D", f = "F"
 }
 
+/// Everything the health verdict is computed from, kept up to date by the indexer so that
+/// grading a session never has to read its transcript.
+///
+/// One source of truth: the list badge and the detail popover both come from these numbers
+/// through ``SessionHealthRule/evaluate(_:)``.
+public struct SessionHealthCounters: Hashable, Sendable, Codable {
+    public var toolCalls: Int
+    public var toolErrors: Int
+    public var apiErrors: Int
+    /// The denominator the API-error and interruption rates are taken against.
+    public var assistantTurns: Int
+    public var abortedTurns: Int
+    /// Longest run of consecutive failing tool calls that were the same call.
+    public var repeatedFailures: Int
+    /// The session's last assistant turn was itself an error.
+    public var endedOnError: Bool
+
+    public static let clean = SessionHealthCounters()
+
+    public init(
+        toolCalls: Int = 0,
+        toolErrors: Int = 0,
+        apiErrors: Int = 0,
+        assistantTurns: Int = 0,
+        abortedTurns: Int = 0,
+        repeatedFailures: Int = 0,
+        endedOnError: Bool = false
+    ) {
+        self.toolCalls = toolCalls
+        self.toolErrors = toolErrors
+        self.apiErrors = apiErrors
+        self.assistantTurns = assistantTurns
+        self.abortedTurns = abortedTurns
+        self.repeatedFailures = repeatedFailures
+        self.endedOnError = endedOnError
+    }
+}
+
 /// A deterministic, LLM-free verdict on how a session went, with its reasons in French.
 public struct SessionHealth: Hashable, Sendable, Codable {
     public let grade: HealthGrade
@@ -430,15 +483,44 @@ public struct ToolMixRow: Hashable, Sendable, Codable, Identifiable {
     }
 }
 
+/// The four token counters, for one model.
+///
+/// Sessions carry these per model rather than a cost, because pricing is edited in Réglages
+/// and applied at display time. Freezing a cost at indexing would make a rate change
+/// invisible and let two sections show different money for the same tokens.
+public struct ModelTokens: Hashable, Sendable, Codable {
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let cacheReadTokens: Int
+    public let cacheCreationTokens: Int
+
+    public var total: Int { inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens }
+
+    public static let zero = ModelTokens(
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0)
+
+    public init(
+        inputTokens: Int, outputTokens: Int, cacheReadTokens: Int, cacheCreationTokens: Int
+    ) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheCreationTokens = cacheCreationTokens
+    }
+}
+
 /// One model and how many assistant turns used it.
 public struct ModelCount: Hashable, Sendable, Codable, Identifiable {
     public var id: String { model }
     public let model: String
     public let turns: Int
+    /// What this model consumed over the range, for the view to price.
+    public let tokens: ModelTokens
 
-    public init(model: String, turns: Int) {
+    public init(model: String, turns: Int, tokens: ModelTokens = .zero) {
         self.model = model
         self.turns = turns
+        self.tokens = tokens
     }
 }
 
@@ -452,6 +534,14 @@ public struct ActivityReport: Hashable, Sendable, Codable {
     public let turns: Int
     public let toolCalls: Int
     public let costUSD: Double
+
+    /// The range's tokens keyed by model, for applying the user's pricing.
+    ///
+    /// `costUSD` only adds up the `cost-state` lines Claude Code wrote, and it writes one for
+    /// barely a tenth of sessions — so on its own it misses most of the spend.
+    public var tokensByModel: [String: ModelTokens] {
+        Dictionary(models.map { ($0.model, $0.tokens) }, uniquingKeysWith: { first, _ in first })
+    }
 
     public static let empty = ActivityReport(
         buckets: [], days: [], tools: [], models: [],

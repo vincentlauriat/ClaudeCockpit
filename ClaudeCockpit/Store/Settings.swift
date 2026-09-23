@@ -17,6 +17,7 @@ enum SettingsKey {
     static let sessionsIndexEnabled = "settings.sessionsIndexEnabled" // Bool, default true
     static let sessionsShowSystemLines = "sessions.showSystemLines"   // Bool, default false
     static let sessionsGrouping = "sessions.grouping"                 // "day" | "project"
+    static let sessionsSelectedId = "sessions.selectedId"             // last opened session
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [

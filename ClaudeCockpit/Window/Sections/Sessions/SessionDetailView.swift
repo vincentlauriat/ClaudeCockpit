@@ -158,10 +158,10 @@ struct SessionDetailView: View {
             if let cost = session.costStateUSD {
                 SessionChip(title: store.money(cost), systemImage: "eurosign.circle", active: true, tint: Theme.blue)
             }
-            SessionChip(title: "\(FRFormat.integer(session.toolCalls)) outils", systemImage: "wrench.and.screwdriver")
+            SessionChip(title: FRFormat.plural(session.toolCalls, "outil"), systemImage: "wrench.and.screwdriver")
             if session.toolErrors > 0 {
                 SessionChip(
-                    title: "\(FRFormat.integer(session.toolErrors)) erreurs",
+                    title: FRFormat.plural(session.toolErrors, "erreur"),
                     systemImage: "exclamationmark.triangle", active: true, tint: .red)
             }
             Spacer(minLength: 8)

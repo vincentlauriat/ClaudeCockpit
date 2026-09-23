@@ -206,11 +206,27 @@ final class TranscriptParserTests: XCTestCase {
     // MARK: - Caps
 
     func testCapsAVeryLargeBlockAndMarksIt() {
-        let huge = String(repeating: "a", count: ContentBlock.bodyCap + 500)
-        let capped = TranscriptParser.capped(huge)
+        let huge = String(repeating: "a", count: ContentBlock.storedBodyCap + 500)
+        let capped = parser.capped(huge)
         XCTAssertTrue(capped.hasSuffix(ContentBlock.truncationMarker))
         XCTAssertEqual(capped.utf8.count,
-                       ContentBlock.bodyCap + ContentBlock.truncationMarker.utf8.count)
-        XCTAssertEqual(TranscriptParser.capped("court"), "court")
+                       ContentBlock.storedBodyCap + ContentBlock.truncationMarker.utf8.count)
+        XCTAssertEqual(parser.capped("court"), "court")
+
+        // The display path re-parses the same line with a far larger cap.
+        let display = TranscriptParser(bodyCap: ContentBlock.bodyCap)
+        XCTAssertEqual(display.capped(huge), huge)
+    }
+
+    /// A cut that lands inside an accented character must back up, not leave a broken glyph.
+    func testCapNeverCutsACharacterInHalf() {
+        let accented = String(repeating: "é", count: 200)   // two bytes per character
+        for cap in [7, 8, 9, 10] {
+            let capped = TranscriptParser.capped(accented, cap: cap)
+            let body = String(capped.dropLast(ContentBlock.truncationMarker.count))
+            XCTAssertFalse(body.unicodeScalars.contains("\u{FFFD}"), "cap \(cap)")
+            XCTAssertTrue(accented.hasPrefix(body), "cap \(cap)")
+            XCTAssertLessThanOrEqual(body.utf8.count, cap, "cap \(cap)")
+        }
     }
 }

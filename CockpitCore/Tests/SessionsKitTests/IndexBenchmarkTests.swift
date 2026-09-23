@@ -90,6 +90,21 @@ final class IndexBenchmarkTests: XCTestCase {
         recent.limit = 20
         let hits = try await service.search("erreur", filter: recent)
 
+        var grades: [HealthGrade: Int] = [:]
+        var longest: (SessionRef, Int)?
+        for session in all where !session.isSubagent {
+            grades[session.healthGrade, default: 0] += 1
+            if session.assistantTurns > (longest?.1 ?? 0) { longest = (session, session.assistantTurns) }
+        }
+        let distribution = HealthGrade.allCases
+            .map { "\($0.rawValue) \(grades[$0] ?? 0)" }.joined(separator: " · ")
+        let heaviestTurns = longest.map {
+            "\($0.0.assistantTurns) tours → \($0.0.healthGrade.rawValue)"
+        } ?? "—"
+
+        let priced = all.filter { !$0.tokensByModel.isEmpty }.count
+        let withCost = all.filter { $0.costStateUSD != nil }.count
+
         let month = try await service.activity(
             since: Date().addingTimeInterval(-30 * 86_400), until: Date())
 
@@ -104,13 +119,77 @@ final class IndexBenchmarkTests: XCTestCase {
             30 derniers j.  : \(month.sessions) sessions, \(month.turns) tours, \
             \(month.toolCalls) appels d'outil, \(String(format: "%.2f", month.costUSD)) $
             top outils      : \(month.tools.prefix(5).map { "\($0.id)×\($0.calls)" }.joined(separator: " "))
+            notes de santé  : \(distribution)
+            la plus longue  : \(heaviestTurns)
+            coût connu      : \(withCost) sessions · jetons par modèle : \(priced)
             ───────────────────────────────────────────────────────────────
 
             """)
 
+        try await measurePaging(on: service)
+
         XCTAssertGreaterThan(all.count, 0)
         XCTAssertGreaterThan(projects.count, 0)
         XCTAssertFalse(month.tools.isEmpty, "le nom d'outil doit remonter sur du vrai corpus")
+        XCTAssertGreaterThan(priced, withCost * 2,
+                             "les jetons par modèle doivent couvrir bien plus que cost-state")
+        if let longest {
+            XCTAssertNotEqual(longest.0.healthGrade, .f,
+                              "la plus longue session ne doit pas être notée F pour sa longueur")
+        }
+    }
+
+    /// Reading a page of the heaviest session there is. This is the number that decides how
+    /// short the view has to paginate.
+    private func measurePaging(on service: SessionService) async throws {
+        // The biggest transcript on disk, not the one with the most messages: the lazy
+        // re-read of capped bodies is what this measures, and that is bounded by bytes.
+        guard let heaviest = try await service.heaviestTranscript() else { return }
+        let session = heaviest.sessionId
+        let total = try await service.messageCount(sessionId: session)
+        let started = Date()
+        let page = try await service.messages(sessionId: session, offset: 0, limit: 400)
+        let firstPage = Date().timeIntervalSince(started)
+
+        let middle = Date()
+        _ = try await service.messages(
+            sessionId: session, offset: max(0, total / 2), limit: 400)
+        let midPage = Date().timeIntervalSince(middle)
+
+        let graded = Date()
+        _ = try await service.health(sessionId: session)
+        let health = Date().timeIntervalSince(graded)
+
+        print("""
+
+            ── Pagination sur la session la plus lourde ────────────────────
+            session       : \(session)
+            transcript    : \(heaviest.bytes / 1_048_576) Mo, \(total) messages visibles
+            page 1 (400)  : \(String(format: "%.0f", firstPage * 1000)) ms \
+            (\(page.flatMap(\.blocks).filter(\.isTruncated).count) blocs relus)
+            page milieu   : \(String(format: "%.0f", midPage * 1000)) ms
+            note de santé : \(String(format: "%.1f", health * 1000)) ms
+            ───────────────────────────────────────────────────────────────
+
+            """)
+
+        // The worst case for the lazy re-read: the session with the most capped blocks.
+        var relecture = "aucun bloc tronqué dans le corpus"
+        if let worst = try await service.mostTruncatedSession() {
+            let started = Date()
+            let page = try await service.messages(
+                sessionId: worst.sessionId, offset: 0, limit: 400)
+            let elapsed = Date().timeIntervalSince(started)
+            let restored = page.flatMap(\.blocks).filter { $0.text.utf8.count > ContentBlock.storedBodyCap }
+            relecture = "\(worst.blocks) blocs tronqués, page en "
+                + "\(String(format: "%.0f", elapsed * 1000)) ms, \(restored.count) relus"
+            XCTAssertLessThan(elapsed, 1.0, "même avec relecture, une page reste sous la seconde")
+        }
+        print("relecture paresseuse : \(relecture)\n")
+
+        XCTAssertLessThan(firstPage, 1.0, "une page de 400 messages doit rester sous la seconde")
+        XCTAssertLessThan(health, 0.05, "la note de santé ne doit lire aucun transcript")
     }
 }
+
 

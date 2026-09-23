@@ -130,8 +130,22 @@ public actor SessionService {
             sessionId: sessionId, includeMeta: includeMeta, offset: offset, limit: limit)
     }
 
-    public func messageCount(sessionId: String) throws -> Int {
-        try store().messageCount(sessionId: sessionId)
+    /// How many messages ``messages(sessionId:includeMeta:offset:limit:)`` will page through,
+    /// under the same visibility rule — so a total and its pages always speak of the same set.
+    public func messageCount(sessionId: String, includeMeta: Bool = false) throws -> Int {
+        try store().messageCount(sessionId: sessionId, includeMeta: includeMeta)
+    }
+
+    /// The 0-based rank of a message in the order ``messages(sessionId:includeMeta:offset:limit:)``
+    /// returns, or `nil` when it does not exist or the visibility rule leaves it out.
+    ///
+    /// This is what turns a ``SearchHit`` into a page to open. It counts rows in an index and
+    /// never reads a transcript.
+    public func messageIndex(
+        sessionId: String, messageId: String, includeMeta: Bool = false
+    ) throws -> Int? {
+        try store().messageIndex(
+            sessionId: sessionId, messageId: messageId, includeMeta: includeMeta)
     }
 
     /// Every message of one sub-agent transcript, oldest first. A sub-agent is indexed as its
@@ -172,18 +186,16 @@ public actor SessionService {
             since: since, until: until, projectCwd: projectCwd, calendar: calendar)
     }
 
-    /// Grades one session. Block bodies are truncated on the way out of SQLite: the rules
-    /// only need to tell two tool calls apart, never to read them, and a 35 MB transcript
-    /// must not be pulled into memory to answer "how did it go".
+    /// The full verdict on one session, with its evidence.
+    ///
+    /// Reads six counters off one row — no transcript is touched. ``SessionRef/healthGrade``
+    /// comes from the same counters through the same function, so the badge in the list and
+    /// the popover in the detail cannot disagree.
     public func health(sessionId: String) throws -> SessionHealth {
-        let store = try store()
-        guard let session = try store.session(id: sessionId) else {
+        guard let counters = try store().healthCounters(sessionId: sessionId) else {
             throw SessionsError.unknownSession(sessionId)
         }
-        let messages = try store.messages(
-            sessionId: sessionId, includeMeta: true, offset: 0,
-            limit: Self.healthPageLimit, bodyLimit: Self.healthBodyLimit)
-        return SessionHealthRule.evaluate(messages: messages, session: session)
+        return SessionHealthRule.evaluate(counters)
     }
 
     // MARK: - Mutating (index only — transcripts are never touched)
@@ -208,6 +220,27 @@ public actor SessionService {
         try store().transcriptURL(sessionId: sessionId)
     }
 
+    /// The session whose transcript weighs the most on disk, with that weight. Diagnostics
+    /// for the corpus benchmark: it is the worst case for the lazy re-read of capped bodies.
+    func heaviestTranscript() throws -> (sessionId: String, bytes: Int64)? {
+        guard let row = try store().rows("""
+            SELECT session_id, size FROM files WHERE is_subagent = 0 ORDER BY size DESC LIMIT 1
+            """).first, let sessionId = row[0] as? String else { return nil }
+        return (sessionId, row[1] as? Int64 ?? 0)
+    }
+
+    /// The session holding the most capped blocks — the worst case for the lazy re-read,
+    /// since every one of them costs a seek and a re-parse. Diagnostics for the benchmark.
+    func mostTruncatedSession() throws -> (sessionId: String, blocks: Int)? {
+        guard let row = try store().rows("""
+            SELECT m.session_id, COUNT(*) AS n FROM blocks b
+            JOIN messages m ON m.id = b.message_id
+            WHERE b.body LIKE '%' || ? GROUP BY m.session_id ORDER BY n DESC LIMIT 1
+            """, [ContentBlock.truncationMarker]).first,
+            let sessionId = row[0] as? String else { return nil }
+        return (sessionId, SessionStore.int(row[1]))
+    }
+
     /// How many sub-agent transcripts were paired with the `Agent` call that spawned them.
     /// Diagnostics for the corpus benchmark; the UI reads the link through
     /// ``ContentBlock/subagentId``.
@@ -220,10 +253,6 @@ public actor SessionService {
 
     /// A sub-agent transcript is a single task; anything past this is a runaway.
     static let subagentPageLimit = 20_000
-    /// Health looks at the whole session, so the cap is generous…
-    static let healthPageLimit = 200_000
-    /// …and the bodies are cut instead. Enough to tell two calls of the same tool apart.
-    static let healthBodyLimit = 400
 }
 
 // MARK: - Export
@@ -253,7 +282,8 @@ public enum SessionExporter {
 
 /// The scoring rules behind ``SessionHealth``. Pure, so they are tested directly.
 public enum SessionHealthRule {
-    public static func evaluate(messages: [SessionMessage], session: SessionRef) -> SessionHealth {
-        evaluateRules(messages: messages, session: session)
+    /// The grade, the score and the French evidence, from counters alone.
+    public static func evaluate(_ counters: SessionHealthCounters) -> SessionHealth {
+        evaluateCounters(counters)
     }
 }

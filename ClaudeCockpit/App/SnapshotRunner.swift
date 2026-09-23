@@ -26,6 +26,12 @@ enum SnapshotRunner {
             try? await Task.sleep(for: .seconds(1))
         }
 
+        // Open the most recent session so the sessions shot shows a real transcript
+        // rather than the empty state. It is usually the largest one too.
+        if let first = store.sessions.first {
+            UserDefaults.standard.set(first.id, forKey: SettingsKey.sessionsSelectedId)
+        }
+
         let sections: [(CockpitSection, String)] = [
             (.overview, "overview"), (.usage, "usage"), (.sessions, "sessions"),
             (.quotas, "quotas"), (.rtk, "rtk"),

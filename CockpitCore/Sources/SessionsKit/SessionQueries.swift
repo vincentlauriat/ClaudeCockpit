@@ -15,7 +15,8 @@ extension SessionStore {
         s.custom_name, s.git_branch, s.cc_version, s.first_ts, s.last_ts,
         s.user_turns, s.assistant_turns, s.tool_calls, s.tool_errors,
         s.input_tokens, s.output_tokens, s.cache_read, s.cache_create,
-        s.cost_state_usd, s.lines_added, s.lines_removed, s.parent_session_id, s.starred
+        s.cost_state_usd, s.lines_added, s.lines_removed, s.parent_session_id, s.starred,
+        s.api_errors, s.aborted_turns, s.repeated_failures, s.ended_on_error
         """
 
     func listSessions(_ filter: SessionFilter) throws -> [SessionRef] {
@@ -97,13 +98,36 @@ extension SessionStore {
             linesAdded: int(row[18]), linesRemoved: int(row[19]),
             parentSessionId: row[20] as? String,
             isStarred: int(row[21]) != 0,
-            prLinks: [])
+            prLinks: [],
+            healthGrade: SessionHealthRule.evaluate(counters(from: row)).grade)
     }
 
-    /// One extra query for the whole page rather than one per row.
+    /// The health counters as the indexer stored them, read straight off a `sessions` row.
+    /// Both the list badge and the detail verdict come through here, so they cannot diverge.
+    static func counters(from row: [Binding?]) -> SessionHealthCounters {
+        SessionHealthCounters(
+            toolCalls: int(row[11]),
+            toolErrors: int(row[12]),
+            apiErrors: int(row[22]),
+            assistantTurns: int(row[10]),
+            abortedTurns: int(row[23]),
+            repeatedFailures: int(row[24]),
+            endedOnError: int(row[25]) != 0)
+    }
+
+    /// The counters of one session, for the detailed verdict.
+    func healthCounters(sessionId: String) throws -> SessionHealthCounters? {
+        guard let row = try rows(
+            "SELECT \(Self.sessionColumns) FROM sessions s WHERE s.id = ?", [sessionId]).first
+        else { return nil }
+        return Self.counters(from: row)
+    }
+
+    /// Two extra queries for the whole page rather than two per row.
     private func attachPRLinks(to refs: [SessionRef]) throws -> [SessionRef] {
         guard !refs.isEmpty else { return [] }
         var bySession: [String: [PRLink]] = [:]
+        var tokens: [String: [String: ModelTokens]] = [:]
         for start in stride(from: 0, to: refs.count, by: Self.inClauseChunk) {
             let chunk = refs[start..<min(refs.count, start + Self.inClauseChunk)]
             let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
@@ -121,9 +145,26 @@ extension SessionStore {
                     timestamp: Date(timeIntervalSince1970: row[4] as? Double ?? 0)))
             }
         }
-        guard !bySession.isEmpty else { return refs }
+        for start in stride(from: 0, to: refs.count, by: Self.inClauseChunk) {
+            let chunk = refs[start..<min(refs.count, start + Self.inClauseChunk)]
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            for row in try rows("""
+                SELECT session_id, model, input_tokens, output_tokens, cache_read, cache_create
+                FROM session_models WHERE session_id IN (\(placeholders))
+                """, chunk.map { $0.id as Binding? }) {
+                guard let sessionId = row[0] as? String, let model = row[1] as? String
+                else { continue }
+                tokens[sessionId, default: [:]][model] = ModelTokens(
+                    inputTokens: int(row[2]), outputTokens: int(row[3]),
+                    cacheReadTokens: int(row[4]), cacheCreationTokens: int(row[5]))
+            }
+        }
+
+        guard !bySession.isEmpty || !tokens.isEmpty else { return refs }
         return refs.map { ref in
-            guard let links = bySession[ref.id] else { return ref }
+            let links = bySession[ref.id] ?? ref.prLinks
+            let byModel = tokens[ref.id] ?? [:]
+            guard !links.isEmpty || !byModel.isEmpty else { return ref }
             return SessionRef(
                 id: ref.id, projectDir: ref.projectDir, cwd: ref.cwd, title: ref.title,
                 customName: ref.customName, gitBranch: ref.gitBranch,
@@ -137,7 +178,7 @@ extension SessionStore {
                 costStateUSD: ref.costStateUSD,
                 linesAdded: ref.linesAdded, linesRemoved: ref.linesRemoved,
                 parentSessionId: ref.parentSessionId, isStarred: ref.isStarred,
-                prLinks: links)
+                prLinks: links, healthGrade: ref.healthGrade, tokensByModel: byModel)
         }
     }
 
@@ -146,31 +187,28 @@ extension SessionStore {
     func messages(
         sessionId: String, includeMeta: Bool, offset: Int, limit: Int, bodyLimit: Int? = nil
     ) throws -> [SessionMessage] {
-        var sql = """
+        let sql = """
             SELECT id, uuid, parent_uuid, seq, ts, role, is_sidechain, is_meta,
                    is_compact_boundary, is_api_error, is_aborted, system_subtype, model,
-                   input_tokens, output_tokens, cache_read, cache_create, attachment_count
-            FROM messages WHERE session_id = ?
+                   input_tokens, output_tokens, cache_read, cache_create, attachment_count,
+                   file_id, line_offset, line_len
+            FROM messages WHERE session_id = ?\(Self.visibility(includeMeta))
+            ORDER BY seq LIMIT ? OFFSET ?
             """
-        if !includeMeta {
-            // "Afficher les lignes système" off. `is_meta` alone is not enough: every
-            // `system` line in the corpus carries `isMeta: false`, so `stop_hook_summary`,
-            // `turn_duration` and friends would still land in the transcript. The compaction
-            // marker is the one system line the reader wants, since it draws the divider.
-            sql += " AND is_meta = 0 AND (role <> 'system' OR is_compact_boundary = 1)"
-        }
-        sql += " ORDER BY seq LIMIT ? OFFSET ?"
 
         let messageRows = try rows(sql, [sessionId, max(0, limit), max(0, offset)])
         guard !messageRows.isEmpty else { return [] }
 
         var order: [Int64] = []
         var drafts: [Int64: SessionMessage] = [:]
+        var lines: [Int64: LineLocation] = [:]
         for row in messageRows {
             guard let rowid = row[0] as? Int64, let uuid = row[1] as? String,
                   let ts = row[4] as? Double, let role = (row[5] as? String).flatMap(MessageRole.init)
             else { continue }
             order.append(rowid)
+            lines[rowid] = LineLocation(
+                fileId: int(row[18]), offset: row[19] as? Int64 ?? 0, length: int(row[20]))
             drafts[rowid] = SessionMessage(
                 id: uuid, sessionId: sessionId, parentId: row[2] as? String,
                 sequence: int(row[3]), timestamp: Date(timeIntervalSince1970: ts), role: role,
@@ -184,10 +222,67 @@ extension SessionStore {
                 attachmentCount: int(row[17]))
         }
 
-        let blocksByMessage = try blocks(forMessages: order, drafts: drafts, bodyLimit: bodyLimit)
+        var blocksByMessage = try blocks(forMessages: order, drafts: drafts, bodyLimit: bodyLimit)
+        // `bodyLimit` means the caller wants identities, not content (the health pass), so
+        // there is nothing to restore.
+        if bodyLimit == nil {
+            try restoreTruncatedBodies(in: &blocksByMessage, lines: lines)
+        }
         return order.compactMap { rowid in
             guard let draft = drafts[rowid] else { return nil }
             return draft.withBlocks(blocksByMessage[rowid] ?? [])
+        }
+    }
+
+    /// Fills in what the 8 KB storage cap cut, by re-reading and re-parsing the transcript
+    /// lines concerned.
+    ///
+    /// Only messages holding a truncated block are touched, so an ordinary page does no I/O
+    /// at all: a block below the cap was stored whole. A transcript that has since been
+    /// deleted simply leaves the truncated text in place rather than failing the page.
+    private func restoreTruncatedBodies(
+        in blocksByMessage: inout [Int64: [ContentBlock]], lines: [Int64: LineLocation]
+    ) throws {
+        let needing = blocksByMessage.filter { $0.value.contains(where: \.isTruncated) }
+        guard !needing.isEmpty else { return }
+
+        var handles: [Int: FileHandle] = [:]
+        defer { for handle in handles.values { try? handle.close() } }
+        let parser = TranscriptParser(bodyCap: ContentBlock.bodyCap)
+
+        for (rowid, stored) in needing {
+            guard let line = lines[rowid], line.length > 0 else { continue }
+            if handles[line.fileId] == nil {
+                guard let path = try scalar(
+                    "SELECT path FROM files WHERE id = ?", [line.fileId]) as? String,
+                    let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+                else { continue }
+                handles[line.fileId] = handle
+            }
+            guard let handle = handles[line.fileId] else { continue }
+            try? handle.seek(toOffset: UInt64(line.offset))
+            guard let data = try? handle.read(upToCount: line.length),
+                  data.count == line.length,
+                  let parsed = Self.reparse(data, with: parser)
+            else { continue }
+
+            // The re-parsed blocks carry the full strings, so a `Write` or a long `Edit`
+            // recovers its diff and not only its text.
+            let fresh = Dictionary(
+                parsed.blocks.map { ($0.index, $0) }, uniquingKeysWith: { first, _ in first })
+            blocksByMessage[rowid] = stored.map { block in
+                guard block.isTruncated, let replacement = fresh[block.index] else { return block }
+                return block.withText(
+                    replacement.body, fileEdit: replacement.fileEdit ?? block.fileEdit)
+            }
+        }
+    }
+
+    /// The message a line holds, whether it is an ordinary turn or a compaction marker.
+    private static func reparse(_ data: Data, with parser: TranscriptParser) -> ParsedMessage? {
+        switch parser.parse(data) {
+        case .message(let message), .compactBoundary(let message): return message
+        default: return nil
         }
     }
 
@@ -240,8 +335,33 @@ extension SessionStore {
     /// by any session of a few hundred turns rather than only by a record-breaking one.
     static let inClauseChunk = 400
 
-    func messageCount(sessionId: String) throws -> Int {
-        int(try scalar("SELECT COUNT(*) FROM messages WHERE session_id = ?", [sessionId]))
+    func messageCount(sessionId: String, includeMeta: Bool) throws -> Int {
+        int(try scalar("""
+            SELECT COUNT(*) FROM messages WHERE session_id = ?\(Self.visibility(includeMeta))
+            """, [sessionId]))
+    }
+
+    /// The 0-based rank of one message in the order ``messages(sessionId:includeMeta:offset:limit:)``
+    /// returns, so a search hit can be turned into a page to open. Indexed count, not a read.
+    func messageIndex(sessionId: String, messageId: String, includeMeta: Bool) throws -> Int? {
+        let visibility = Self.visibility(includeMeta)
+        guard let seq = try scalar("""
+            SELECT seq FROM messages WHERE session_id = ? AND uuid = ?\(visibility)
+            """, [sessionId, messageId]) as? Int64
+        else { return nil }
+        return int(try scalar("""
+            SELECT COUNT(*) FROM messages WHERE session_id = ? AND seq < ?\(visibility)
+            """, [sessionId, seq]))
+    }
+
+    /// What "Afficher les lignes système" is off means, in one place: the readable transcript.
+    ///
+    /// `is_meta` alone is not enough — every `system` line in the corpus carries
+    /// `isMeta: false`, so `stop_hook_summary`, `turn_duration` and friends would still land
+    /// in the transcript. The compaction marker is the one system line the reader wants,
+    /// since it draws the divider.
+    static func visibility(_ includeMeta: Bool) -> String {
+        includeMeta ? "" : " AND is_meta = 0 AND (role <> 'system' OR is_compact_boundary = 1)"
     }
 
     private static func decodeMeta(_ raw: String?) -> [String: Any] {
@@ -457,14 +577,21 @@ extension SessionStore {
             tools.append(ToolMixRow(id: name, calls: calls, errors: int(row[2])))
         }
 
+        // Tokens as well as turns: `cost_state_usd` covers about one session in ten, so the
+        // view prices these with the user's rates to show a figure for the rest.
         let models = try rows("""
-            SELECT m.model, COUNT(*) FROM messages m JOIN sessions s ON s.id = m.session_id
+            SELECT m.model, COUNT(*),
+                   COALESCE(SUM(m.input_tokens), 0), COALESCE(SUM(m.output_tokens), 0),
+                   COALESCE(SUM(m.cache_read), 0), COALESCE(SUM(m.cache_create), 0)
+            FROM messages m JOIN sessions s ON s.id = m.session_id
             WHERE m.role = 'assistant' AND m.model IS NOT NULL AND m.is_duplicate = 0
               AND s.deleted_at IS NULL AND m.ts >= ? AND m.ts < ?\(scope)
             GROUP BY m.model ORDER BY 2 DESC
             """, scoped).compactMap { row -> ModelCount? in
             guard let model = row[0] as? String else { return nil }
-            return ModelCount(model: model, turns: int(row[1]))
+            return ModelCount(model: model, turns: int(row[1]), tokens: ModelTokens(
+                inputTokens: int(row[2]), outputTokens: int(row[3]),
+                cacheReadTokens: int(row[4]), cacheCreationTokens: int(row[5])))
         }
 
         let days = Self.days(
@@ -535,6 +662,16 @@ extension ActivityBucket {
     struct Key: Hashable {
         let weekday: Int
         let hour: Int
+    }
+}
+
+extension ContentBlock {
+    /// The same block with its body replaced by the full version read back from the transcript.
+    func withText(_ text: String, fileEdit: FileEdit?) -> ContentBlock {
+        ContentBlock(
+            id: id, index: index, kind: kind, text: text, toolName: toolName,
+            toolUseId: toolUseId, isError: isError, fileEdit: fileEdit,
+            imageMediaType: imageMediaType, subagentId: subagentId)
     }
 }
 

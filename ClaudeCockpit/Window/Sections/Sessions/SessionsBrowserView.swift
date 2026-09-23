@@ -14,7 +14,13 @@ struct SessionsBrowserView: View {
 
     @State private var searchText = ""
     @State private var debounce: Task<Void, Never>?
-    @State private var selection: String?
+    /// Persisted like the sidebar section: reopening the window on the transcript you
+    /// were reading is the expected behaviour, and it gives the snapshot runner a way
+    /// to capture the detail view instead of the empty state.
+    @State private var selection: String? = {
+        let stored = UserDefaults.standard.string(forKey: SettingsKey.sessionsSelectedId)
+        return (stored?.isEmpty ?? true) ? nil : stored
+    }()
     @State private var hits: [SearchHit] = []
     @State private var projects: [ProjectCount] = []
     @State private var period: Period = .all
@@ -72,6 +78,9 @@ struct SessionsBrowserView: View {
             }
         }
         .onReceive(clock) { now = $0 }
+        .onChange(of: selection) { _, new in
+            UserDefaults.standard.set(new ?? "", forKey: SettingsKey.sessionsSelectedId)
+        }
         .task { projects = await store.sessionProjects() }
         .onChange(of: store.sessionIndex.lastRun) { _, _ in
             Task { projects = await store.sessionProjects() }
@@ -311,7 +320,7 @@ struct SessionsBrowserView: View {
                 Text("Indexation des transcripts…")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.ink)
-                Text("\(store.sessionIndex.filesDone) fichiers sur \(store.sessionIndex.filesTotal). La liste se remplit au fur et à mesure.")
+                Text("\(FRFormat.plural(store.sessionIndex.filesDone, "fichier")) sur \(store.sessionIndex.filesTotal). La liste se remplit au fur et à mesure.")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.slate)
                     .multilineTextAlignment(.center)
@@ -485,7 +494,7 @@ private struct SessionRowView: View {
         HStack(spacing: 8) {
             Text(FRFormat.time(session.firstTimestamp))
             Text(FRFormat.duration(session.duration))
-            Text("\(FRFormat.integer(session.userTurns + session.assistantTurns)) tours")
+            Text(FRFormat.plural(session.userTurns + session.assistantTurns, "tour"))
             if session.toolErrors > 0 {
                 Text("\(FRFormat.integer(session.toolErrors)) err.").foregroundStyle(.red)
             }
