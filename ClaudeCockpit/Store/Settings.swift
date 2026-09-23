@@ -4,6 +4,7 @@ import Foundation
 enum SettingsKey {
     static let launchAtLogin = "settings.launchAtLogin"
     static let menuBarOnly = "settings.menuBarOnly"
+    static let menuBarMeter = "settings.menuBarMeter"             // MenuBarMeter, default .week
     static let usageRefreshSeconds = "settings.usageRefreshSeconds"   // Int, default 30
     static let rtkDBPath = "settings.rtkDBPath"                       // String, empty = auto
     static let projectRoots = "settings.projectRoots"                 // String, newline-separated
