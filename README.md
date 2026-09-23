@@ -232,7 +232,7 @@ ClaudeCockpit/
 ## Release
 
 ```bash
-./Scripts/release.sh 1.0.1
+./Scripts/release.sh 1.1.0
 ```
 
 The script regenerates the project, builds Release, stages the app through `ditto
