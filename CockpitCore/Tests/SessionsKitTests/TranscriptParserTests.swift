@@ -116,12 +116,78 @@ final class TranscriptParserTests: XCTestCase {
         XCTAssertEqual(removed, 3)
     }
 
-    /// Attachments are recognised on the raw bytes, so their payload never reaches the JSON
-    /// decoder — only the uuid of the message they hang off is read out.
-    func testAttachmentsAreCountedNotStored() {
-        guard case .attachment(let parentUuid) = parse(Line.attachment(parentUuid: "u2"))
-        else { return XCTFail("attendu une ligne attachment") }
-        XCTAssertEqual(parentUuid, "u2")
+    /// `attachment` is mostly Claude Code's own plumbing: hook output, token reminders, the
+    /// date, the skill listing. 112 015 such lines in the real archive against 412 naming a file.
+    /// Treating them all as attachments put a phantom "1 pièce jointe" on nearly every turn.
+    func testClaudeCodePlumbingIsNotAnAttachment() {
+        for kind in ["hook_success", "total_tokens_reminder", "hook_additional_context",
+                     "environment", "skill_listing", "date", "model", "prompt_snapshot"] {
+            guard case .ignored = parse(Line.attachment(parentUuid: "u2", kind: kind))
+            else { return XCTFail("\(kind) ne doit pas compter comme pièce jointe") }
+        }
+    }
+
+    /// An allow-list, not a deny-list: a kind Claude Code invents tomorrow stays out until
+    /// someone decides it is a file.
+    func testAnUnknownAttachmentKindIsIgnoredRatherThanCounted() {
+        guard case .ignored = parse(Line.attachment(parentUuid: "u2", kind: "quantum_reminder"))
+        else { return XCTFail("un type inconnu doit rester hors du compte") }
+    }
+
+    func testARealFileAttachmentIsNamedFromItsDisplayPath() {
+        guard case .attachment(let name) = parse(Line.fileAttachment(
+            parentUuid: "u2", filename: "/Users/test/DevApps/Demo/internal/api.go",
+            displayPath: "internal/api.go"))
+        else { return XCTFail("attendu une pièce jointe") }
+        XCTAssertEqual(name, "internal/api.go")
+    }
+
+    /// `edited_text_file` names a file and is still not an attachment: it is the notice that
+    /// a file changed on disk. Over the whole archive 196 of its 205 occurrences follow a line
+    /// whose only content is a `tool_result`, i.e. the agent reporting its own edit, never
+    /// someone attaching a file. This test exists so it is not put back as a forgotten kind.
+    func testAnEditedTextFileIsNotAnAttachment() {
+        guard case .ignored = parse(Line.fileAttachment(
+            parentUuid: "u2", kind: "edited_text_file",
+            filename: "/Users/test/DevApps/Demo/notes/TODO.md"))
+        else { return XCTFail("une notification de modification n'est pas une pièce jointe") }
+    }
+
+    /// Without `displayPath` the name falls back to the file's own, an absolute path being
+    /// too long to sit in a turn header.
+    func testAnAttachmentWithoutDisplayPathFallsBackToItsFileName() {
+        guard case .attachment(let name) = parse(Line.fileAttachment(
+            parentUuid: "u2", filename: "/Users/test/DevApps/Demo/notes/TODO.md"))
+        else { return XCTFail("attendu une pièce jointe") }
+        XCTAssertEqual(name, "TODO.md")
+    }
+
+    func testACompactFileReferenceIsAnAttachment() {
+        guard case .attachment(let name) = parse(Line.fileAttachment(
+            parentUuid: "u2", kind: "compact_file_reference",
+            filename: "/Users/test/DevApps/Demo/store/azure.go",
+            displayPath: "store/azure.go"))
+        else { return XCTFail("attendu une pièce jointe") }
+        XCTAssertEqual(name, "store/azure.go")
+    }
+
+    /// The byte scan is only a filter; the nested `type` decides. A hook whose output happens
+    /// to quote `"type":"file"` must not become an attachment.
+    func testAHookQuotingAFileTypeIsStillIgnored() {
+        let line = Line.encode([
+            "type": "attachment", "uuid": "x", "parentUuid": "u2", "sessionId": Line.session,
+            "attachment": ["type": "hook_success", "stdout": #"{"type":"file","filename":"/tmp/a"}"#],
+        ])
+        guard case .ignored = parse(line)
+        else { return XCTFail("le type imbriqué fait foi, pas les octets") }
+    }
+
+    func testAFileAttachmentWithoutAnyNameIsIgnored() {
+        let line = Line.encode([
+            "type": "attachment", "uuid": "x", "parentUuid": "u2", "sessionId": Line.session,
+            "attachment": ["type": "file", "content": "…"],
+        ])
+        guard case .ignored = parse(line) else { return XCTFail("sans nom, rien à afficher") }
     }
 
     func testIgnoresNoiseAndUnknownLineKinds() {

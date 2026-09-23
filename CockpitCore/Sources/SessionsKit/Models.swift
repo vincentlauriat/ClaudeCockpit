@@ -151,8 +151,14 @@ public struct SessionMessage: Identifiable, Hashable, Sendable, Codable {
     public let blocks: [ContentBlock]
     /// For `role == .system`, e.g. `stop_hook_summary`, `compact_boundary`, `turn_duration`.
     public let systemSubtype: String?
-    /// Number of `attachment` lines that followed this message; their bodies are not stored.
-    public let attachmentCount: Int
+    /// Files the user attached to this turn, by display path or file name.
+    ///
+    /// Only real files: `attachment` is also the line type Claude Code uses for hook output,
+    /// token reminders and the skill listing, which are 99,76 % of them and are dropped.
+    public let attachments: [String]
+
+    /// Kept as a convenience; it is exactly `attachments.count`, so the two cannot disagree.
+    public var attachmentCount: Int { attachments.count }
 
     public var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens }
 
@@ -175,7 +181,7 @@ public struct SessionMessage: Identifiable, Hashable, Sendable, Codable {
         cacheCreationTokens: Int = 0,
         blocks: [ContentBlock] = [],
         systemSubtype: String? = nil,
-        attachmentCount: Int = 0
+        attachments: [String] = []
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -195,7 +201,7 @@ public struct SessionMessage: Identifiable, Hashable, Sendable, Codable {
         self.cacheCreationTokens = cacheCreationTokens
         self.blocks = blocks
         self.systemSubtype = systemSubtype
-        self.attachmentCount = attachmentCount
+        self.attachments = attachments
     }
 }
 

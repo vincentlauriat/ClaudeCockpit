@@ -195,13 +195,35 @@ enum Line {
         return encode(object)
     }
 
-    static func attachment(parentUuid: String, sessionId: String = session) -> String {
+    /// Claude Code's own plumbing, written under the `attachment` line type. This is 99,76 %
+    /// of them in the real archive, and none of it is a file the user attached.
+    static func attachment(
+        parentUuid: String, kind: String = "hook_success", sessionId: String = session
+    ) -> String {
         encode([
             "type": "attachment",
             "uuid": UUID().uuidString,
             "parentUuid": parentUuid,
             "sessionId": sessionId,
-            "attachment": ["type": "hook_success", "stdout": String(repeating: "x", count: 4000)],
+            "attachment": ["type": kind, "stdout": String(repeating: "x", count: 4000)],
+        ])
+    }
+
+    /// A line naming a file. Only `file` and `compact_file_reference` count as attachments;
+    /// `edited_text_file` is built here too, so tests can prove it stays out.
+    static func fileAttachment(
+        parentUuid: String, kind: String = "file",
+        filename: String, displayPath: String? = nil, sessionId: String = session
+    ) -> String {
+        var attachment: [String: Any] = ["type": kind, "filename": filename]
+        if let displayPath { attachment["displayPath"] = displayPath }
+        if kind == "edited_text_file" { attachment["snippet"] = "1\tune ligne" }
+        return encode([
+            "type": "attachment",
+            "uuid": UUID().uuidString,
+            "parentUuid": parentUuid,
+            "sessionId": sessionId,
+            "attachment": attachment,
         ])
     }
 
@@ -289,6 +311,14 @@ extension TranscriptFixture {
         let path = "\(Line.project)/\(Line.session).jsonl"
         try write([
             Line.user(uuid: "u1", text: "Corrige le parseur de transcripts", at: TestClock.offset(0)),
+            // Attachments follow the turn they belong to, as Claude Code writes them, and
+            // chain off one another rather than off the message.
+            Line.fileAttachment(parentUuid: "u1",
+                                filename: "/Users/test/DevApps/Demo/internal/api.go",
+                                displayPath: "internal/api.go"),
+            // Claude Code's notice that a file changed on disk — never counted.
+            Line.fileAttachment(parentUuid: "u1", kind: "edited_text_file",
+                                filename: "/Users/test/DevApps/Demo/notes/TODO.md"),
             Line.assistant(uuid: "a1", at: TestClock.offset(1), blocks: [
                 Line.thinking("Il faut regarder le fichier d'abord."),
                 Line.text("Je regarde le fichier."),
@@ -296,6 +326,7 @@ extension TranscriptFixture {
             ], messageId: "msg-a1"),
             Line.toolResult(uuid: "u2", at: TestClock.offset(2), toolUseId: "tool-bash",
                             text: "total 24\ndrwxr-xr-x"),
+            // Plumbing after another turn: it must leave no trace at all.
             Line.attachment(parentUuid: "u2"),
             Line.noise(),
 

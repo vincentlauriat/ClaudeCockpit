@@ -14,8 +14,9 @@ public enum ParsedLine: Sendable {
     case aiTitle(sessionId: String, title: String)
     case prLink(sessionId: String, link: PRLink)
     case costState(sessionId: String, costUSD: Double, linesAdded: Int, linesRemoved: Int)
-    /// A hook/injection line. Its body is never stored, only counted on its parent message.
-    case attachment(parentUuid: String?)
+    /// A file the user attached to their turn. Only its name is kept, and it belongs to the
+    /// message the reader last saw — see ``TranscriptParser`` on why that is the parent.
+    case attachment(name: String)
     case ignored
 }
 
@@ -72,10 +73,31 @@ public struct ParsedBlock: Sendable {
 
 /// Turns one raw JSONL line into a ``ParsedLine``.
 ///
+/// ## Which turn an attachment belongs to
+/// An attachment's `parentUuid` usually points at *another* attachment rather than at a
+/// message: Claude Code chains them, up to nine deep in the real archive. Walking that chain
+/// and taking the last message written before the attachment give the same answer on all 273
+/// file attachments of the archive, with no exception, so the indexer uses the simpler of the
+/// two and the parser does not need to report a parent at all.
+///
 /// Pure and stateless: the indexer owns every decision that needs more than one line.
 /// Uses `JSONSerialization` rather than `Codable` because transcripts carry dozens of keys
 /// that change between Claude Code releases and must not break the parse.
 public struct TranscriptParser: Sendable {
+
+    /// The only `attachment` kinds that name a file. Everything else under that line type is
+    /// Claude Code's own plumbing — hook output, token reminders, the date, the skill listing
+    /// — and amounts to 99,8 % of them: 112 015 attachment lines in the real archive, of which
+    /// 412 name a file. Counting the rest put a phantom "1 pièce jointe" on nearly every turn.
+    ///
+    /// `edited_text_file` is deliberately absent although it names a file: it is the notice
+    /// that a file changed on disk, not something anyone attached. Over the whole archive 196
+    /// of its 205 occurrences land on a line whose only content is a `tool_result`, which is
+    /// Claude Code bringing a tool's answer back. Do not add it back thinking it was forgotten.
+    ///
+    /// The list is an allow-list: a kind Claude Code adds tomorrow is ignored rather than
+    /// counted, so the defect stays closed by construction.
+    static let fileAttachmentTypes = ["file", "compact_file_reference"]
 
     /// Line types that never reach the UI. Recognised on the raw bytes so a 200 KB hook
     /// payload is never handed to `JSONSerialization` — `attachment` alone is the most
@@ -99,10 +121,16 @@ public struct TranscriptParser: Sendable {
 
     /// - Parameter data: one line, without its trailing newline.
     public func parse(_ data: Data) -> ParsedLine {
-        // Cheap pre-filter on the raw bytes, before any JSON work.
+        // Cheap pre-filter on the raw bytes, before any JSON work. An attachment line only
+        // deserves decoding when it might carry a file, which fewer than three in a thousand
+        // do — the others can hold 200 KB of hook output that never has to be parsed.
         if Self.contains(data, #""type":"attachment""#) {
-            return .attachment(parentUuid: Self.scanUUID(data, after: #""parentUuid":""#))
+            let mayHoldAFile = Self.fileAttachmentTypes.contains {
+                Self.contains(data, #""type":"\#($0)""#)
+            }
+            guard mayHoldAFile else { return .ignored }
         }
+
         for type in Self.skippedTypes where Self.contains(data, #""type":"\#(type)""#) {
             return .ignored
         }
@@ -145,7 +173,14 @@ public struct TranscriptParser: Sendable {
                 linesRemoved: Self.int(line["totalLinesRemoved"]) ?? 0)
 
         case "attachment":
-            return .attachment(parentUuid: line["parentUuid"] as? String)
+            // The decode is what decides: the byte scan can match a kind quoted inside a hook's
+            // own output, and the nested `type` is the only authority.
+            guard let attachment = line["attachment"] as? [String: Any],
+                  let kind = attachment["type"] as? String,
+                  Self.fileAttachmentTypes.contains(kind),
+                  let name = Self.attachmentName(attachment)
+            else { return .ignored }
+            return .attachment(name: name)
 
         case "user", "assistant", "system":
             guard let message = makeMessage(line: line, type: type, sessionId: sessionId) else {
@@ -333,6 +368,21 @@ public struct TranscriptParser: Sendable {
 
     static func isAgentTool(_ name: String) -> Bool { name == "Agent" || name == "Task" }
 
+    /// What to show for an attached file: the path relative to the project when the line
+    /// carries one, otherwise the file's own name, since a full absolute path is too long to
+    /// sit in a turn header. Both allowed kinds carry `displayPath`; the fallback is defensive.
+    static func attachmentName(_ attachment: [String: Any]) -> String? {
+        if let display = (attachment["displayPath"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !display.isEmpty {
+            return display
+        }
+        guard let filename = (attachment["filename"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !filename.isEmpty
+        else { return nil }
+        let last = filename.split(separator: "/").last.map(String.init) ?? filename
+        return last.isEmpty ? filename : last
+    }
+
     // MARK: - File edits
 
     /// The file-touching tools, with the input keys each of them actually uses.
@@ -460,23 +510,6 @@ public struct TranscriptParser: Sendable {
     static func contains(_ data: Data, _ needle: String) -> Bool {
         data.range(of: Data(needle.utf8)) != nil
     }
-
-    /// Reads the quoted identifier that follows `marker`, without decoding the line.
-    ///
-    /// `marker` ends on the opening quote, so the value runs to the next one. Returns `nil`
-    /// for `"parentUuid":null`, which is what a root line has — the marker simply is not there.
-    static func scanUUID(_ data: Data, after marker: String) -> String? {
-        guard let range = data.range(of: Data(marker.utf8)) else { return nil }
-        let start = range.upperBound
-        let end = min(data.endIndex, start + maxIdentifierLength)
-        guard start < end,
-              let quote = data[start..<end].firstIndex(of: UInt8(ascii: "\"")), quote > start
-        else { return nil }
-        return String(decoding: data[start..<quote], as: UTF8.self)
-    }
-
-    /// A uuid is 36 bytes; the cap only guards against a marker that was never closed.
-    static let maxIdentifierLength = 128
 
     // MARK: - Timestamps
 

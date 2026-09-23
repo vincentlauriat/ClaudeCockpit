@@ -16,7 +16,7 @@ final class SessionStore {
     let db: Connection
 
     /// Bumped whenever the schema changes shape; a mismatch triggers a full rebuild.
-    static let schemaVersion = 3
+    static let schemaVersion = 4
 
     init(databaseURL: URL) throws {
         self.databaseURL = databaseURL
@@ -128,7 +128,6 @@ final class SessionStore {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read INTEGER NOT NULL DEFAULT 0,
                 cache_create INTEGER NOT NULL DEFAULT 0,
-                attachment_count INTEGER NOT NULL DEFAULT 0,
                 -- Where this message's JSONL line sits, so a block capped at
                 -- `ContentBlock.storedBodyCap` can have its full text read back on demand.
                 -- All the blocks of a message share one line, so the offsets live here.
@@ -140,6 +139,16 @@ final class SessionStore {
             CREATE INDEX IF NOT EXISTS messages_session_seq ON messages(session_id, seq);
             CREATE INDEX IF NOT EXISTS messages_ts ON messages(ts);
             CREATE INDEX IF NOT EXISTS messages_api_id ON messages(api_message_id);
+
+            -- Files the user attached to a turn, by name. A table rather than a counter on
+            -- `messages`: a name is worth more than a number, and there are 273 of them in a
+            -- 900 MB archive, so the join costs nothing.
+            CREATE TABLE IF NOT EXISTS attachments (
+                id INTEGER PRIMARY KEY,
+                message_id INTEGER NOT NULL,
+                name TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS attachments_message ON attachments(message_id);
 
             CREATE TABLE IF NOT EXISTS blocks (
                 id INTEGER PRIMARY KEY,
@@ -308,6 +317,10 @@ final class SessionStore {
             """, [sessionId])
         try run("""
             DELETE FROM blocks WHERE message_id IN (SELECT id FROM messages WHERE session_id = ?)
+            """, [sessionId])
+        try run("""
+            DELETE FROM attachments
+            WHERE message_id IN (SELECT id FROM messages WHERE session_id = ?)
             """, [sessionId])
         try run("DELETE FROM messages WHERE session_id = ?", [sessionId])
         try run("DELETE FROM edits WHERE session_id = ?", [sessionId])

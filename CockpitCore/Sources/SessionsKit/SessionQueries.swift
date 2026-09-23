@@ -190,7 +190,7 @@ extension SessionStore {
         let sql = """
             SELECT id, uuid, parent_uuid, seq, ts, role, is_sidechain, is_meta,
                    is_compact_boundary, is_api_error, is_aborted, system_subtype, model,
-                   input_tokens, output_tokens, cache_read, cache_create, attachment_count,
+                   input_tokens, output_tokens, cache_read, cache_create,
                    file_id, line_offset, line_len
             FROM messages WHERE session_id = ?\(Self.visibility(includeMeta))
             ORDER BY seq LIMIT ? OFFSET ?
@@ -208,7 +208,7 @@ extension SessionStore {
             else { continue }
             order.append(rowid)
             lines[rowid] = LineLocation(
-                fileId: int(row[18]), offset: row[19] as? Int64 ?? 0, length: int(row[20]))
+                fileId: int(row[17]), offset: row[18] as? Int64 ?? 0, length: int(row[19]))
             drafts[rowid] = SessionMessage(
                 id: uuid, sessionId: sessionId, parentId: row[2] as? String,
                 sequence: int(row[3]), timestamp: Date(timeIntervalSince1970: ts), role: role,
@@ -218,8 +218,7 @@ extension SessionStore {
                 model: row[12] as? String,
                 inputTokens: int(row[13]), outputTokens: int(row[14]),
                 cacheReadTokens: int(row[15]), cacheCreationTokens: int(row[16]),
-                blocks: [], systemSubtype: row[11] as? String,
-                attachmentCount: int(row[17]))
+                blocks: [], systemSubtype: row[11] as? String)
         }
 
         var blocksByMessage = try blocks(forMessages: order, drafts: drafts, bodyLimit: bodyLimit)
@@ -228,10 +227,32 @@ extension SessionStore {
         if bodyLimit == nil {
             try restoreTruncatedBodies(in: &blocksByMessage, lines: lines, drafts: drafts)
         }
+        let attachmentsByMessage = try attachments(forMessages: order)
         return order.compactMap { rowid in
             guard let draft = drafts[rowid] else { return nil }
-            return draft.withBlocks(blocksByMessage[rowid] ?? [])
+            return draft.with(
+                blocks: blocksByMessage[rowid] ?? [],
+                attachments: attachmentsByMessage[rowid] ?? [])
         }
+    }
+
+    /// The attached file names for one page, in one query. There are a few hundred in the
+    /// whole archive, so this is as cheap as it looks.
+    private func attachments(forMessages order: [Int64]) throws -> [Int64: [String]] {
+        guard !order.isEmpty else { return [:] }
+        var result: [Int64: [String]] = [:]
+        for start in stride(from: 0, to: order.count, by: Self.inClauseChunk) {
+            let chunk = order[start..<min(order.count, start + Self.inClauseChunk)]
+            let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+            for row in try rows("""
+                SELECT message_id, name FROM attachments
+                WHERE message_id IN (\(placeholders)) ORDER BY message_id, id
+                """, chunk.map { $0 as Binding? }) {
+                guard let rowid = row[0] as? Int64, let name = row[1] as? String else { continue }
+                result[rowid, default: []].append(name)
+            }
+        }
+        return result
     }
 
     /// Fills in what the 8 KB storage cap cut, by re-reading and re-parsing the transcript
@@ -683,15 +704,15 @@ extension ContentBlock {
 }
 
 extension SessionMessage {
-    /// The messages come back from one query and their blocks from another; this is where
-    /// the two halves meet.
-    func withBlocks(_ blocks: [ContentBlock]) -> SessionMessage {
+    /// The message comes back from one query, its blocks from another and its attachments
+    /// from a third; this is where the three meet.
+    func with(blocks: [ContentBlock], attachments: [String]) -> SessionMessage {
         SessionMessage(
             id: id, sessionId: sessionId, parentId: parentId, sequence: sequence,
             timestamp: timestamp, role: role, isSidechain: isSidechain, isMeta: isMeta,
             isCompactBoundary: isCompactBoundary, isApiError: isApiError, isAborted: isAborted,
             model: model, inputTokens: inputTokens, outputTokens: outputTokens,
             cacheReadTokens: cacheReadTokens, cacheCreationTokens: cacheCreationTokens,
-            blocks: blocks, systemSubtype: systemSubtype, attachmentCount: attachmentCount)
+            blocks: blocks, systemSubtype: systemSubtype, attachments: attachments)
     }
 }

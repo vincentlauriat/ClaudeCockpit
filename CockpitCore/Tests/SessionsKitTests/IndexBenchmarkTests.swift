@@ -135,6 +135,7 @@ final class IndexBenchmarkTests: XCTestCase {
             "\($0.0.assistantTurns) tours → \($0.0.healthGrade.rawValue)"
         } ?? "—"
 
+        let attachments = try await service.attachmentStats()
         let priced = all.filter { !$0.tokensByModel.isEmpty }.count
         let withCost = all.filter { $0.costStateUSD != nil }.count
 
@@ -155,6 +156,9 @@ final class IndexBenchmarkTests: XCTestCase {
             notes de santé  : \(distribution)
             la plus longue  : \(heaviestTurns)
             coût connu      : \(withCost) sessions · jetons par modèle : \(priced)
+            pièces jointes  : \(attachments.files) fichiers sur \
+            \(attachments.withAttachment) tours « Vous » (sur \(attachments.userTurnsWithText) avec du texte)
+            bulles vides    : \(attachments.bareBubbles) (une pièce jointe et rien d'autre)
             ───────────────────────────────────────────────────────────────
 
             """)
@@ -164,6 +168,10 @@ final class IndexBenchmarkTests: XCTestCase {
         XCTAssertGreaterThan(all.count, 0)
         XCTAssertGreaterThan(projects.count, 0)
         XCTAssertFalse(month.tools.isEmpty, "le nom d'outil doit remonter sur du vrai corpus")
+        XCTAssertLessThan(attachments.withAttachment, attachments.userTurnsWithText / 4,
+                          "une pièce jointe doit rester l'exception, pas la règle")
+        XCTAssertEqual(attachments.bareBubbles, 0,
+                       "aucune bulle « Vous » ne doit se réduire à une pièce jointe")
         XCTAssertGreaterThan(priced, withCost * 2,
                              "les jetons par modèle doivent couvrir bien plus que cost-state")
         if let longest {
