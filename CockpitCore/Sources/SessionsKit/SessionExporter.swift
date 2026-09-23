@@ -1,5 +1,6 @@
 // SessionsKit — see docs/superpowers/specs/2026-09-23-sessions-viewer.md
 import Foundation
+import CockpitShared
 
 extension SessionExporter {
 
@@ -38,6 +39,24 @@ extension SessionExporter {
         return "\(total) s"
     }
 
+    /// The address to link to, or `nil` when it must be shown as plain text.
+    ///
+    /// `PRLink.url` is built by `URL(string:)` from a `pr-link` line, and a transcript is not
+    /// a trusted document: `URL(string: "javascript:…")` parses happily. Escaping the markup
+    /// does nothing about the scheme, so an exported file would carry a live hostile link.
+    /// Only the two schemes a pull request can legitimately use are allowed through.
+    static func linkable(_ url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https"
+        else { return nil }
+        return url.absoluteString
+    }
+
+    /// `3 pièces jointes masquées.` — the count, the noun and the participle all agree.
+    static func attachmentNote(_ count: Int) -> String {
+        let participle = abs(count) < 2 ? "masquée" : "masquées"
+        return "\(FRFormat.plural(count, "pièce jointe")) \(participle)."
+    }
+
     static func roleLabel(_ message: SessionMessage) -> String {
         switch message.role {
         case .user: return "Utilisateur"
@@ -55,8 +74,10 @@ extension SessionExporter {
         for (label, value) in header(session) { out += "- **\(label)** : \(value)\n" }
         if !session.prLinks.isEmpty {
             out += "- **Pull requests** : "
-            out += session.prLinks.map { "[#\($0.number)](\($0.url.absoluteString))" }
-                .joined(separator: ", ") + "\n"
+            out += session.prLinks.map { link -> String in
+                guard let address = linkable(link.url) else { return "#\(link.number)" }
+                return "[#\(link.number)](\(address))"
+            }.joined(separator: ", ") + "\n"
         }
         out += "\n"
 
@@ -99,7 +120,7 @@ extension SessionExporter {
             }
         }
         if message.attachmentCount > 0 {
-            out += "_\(message.attachmentCount) pièce(s) jointe(s) masquée(s)._\n\n"
+            out += "_\(attachmentNote(message.attachmentCount))_\n\n"
         }
         return out
     }
@@ -147,7 +168,13 @@ extension SessionExporter {
             out += "<dt>\(escape(label))</dt><dd>\(escape(value))</dd>"
         }
         for link in session.prLinks {
-            out += "<dt>PR</dt><dd><a href=\"\(escape(link.url.absoluteString))\">#\(link.number)</a></dd>"
+            out += "<dt>PR</dt><dd>"
+            if let address = linkable(link.url) {
+                out += "<a href=\"\(escape(address))\">#\(link.number)</a>"
+            } else {
+                out += "#\(link.number) <em>(\(escape(link.url.absoluteString)))</em>"
+            }
+            out += "</dd>"
         }
         out += "</dl>\n"
 
@@ -192,7 +219,7 @@ extension SessionExporter {
             }
         }
         if message.attachmentCount > 0 {
-            out += "<p><em>\(message.attachmentCount) pièce(s) jointe(s) masquée(s).</em></p>"
+            out += "<p><em>\(escape(attachmentNote(message.attachmentCount)))</em></p>"
         }
         return out + "</section>\n"
     }

@@ -226,7 +226,7 @@ extension SessionStore {
         // `bodyLimit` means the caller wants identities, not content (the health pass), so
         // there is nothing to restore.
         if bodyLimit == nil {
-            try restoreTruncatedBodies(in: &blocksByMessage, lines: lines)
+            try restoreTruncatedBodies(in: &blocksByMessage, lines: lines, drafts: drafts)
         }
         return order.compactMap { rowid in
             guard let draft = drafts[rowid] else { return nil }
@@ -241,7 +241,9 @@ extension SessionStore {
     /// at all: a block below the cap was stored whole. A transcript that has since been
     /// deleted simply leaves the truncated text in place rather than failing the page.
     private func restoreTruncatedBodies(
-        in blocksByMessage: inout [Int64: [ContentBlock]], lines: [Int64: LineLocation]
+        in blocksByMessage: inout [Int64: [ContentBlock]],
+        lines: [Int64: LineLocation],
+        drafts: [Int64: SessionMessage]
     ) throws {
         let needing = blocksByMessage.filter { $0.value.contains(where: \.isTruncated) }
         guard !needing.isEmpty else { return }
@@ -263,8 +265,13 @@ extension SessionStore {
             try? handle.seek(toOffset: UInt64(line.offset))
             guard let data = try? handle.read(upToCount: line.length),
                   data.count == line.length,
-                  let parsed = Self.reparse(data, with: parser)
+                  let parsed = Self.reparse(data, with: parser),
+                  parsed.uuid == drafts[rowid]?.id
             else { continue }
+            // The uuid check is the point: an offset is only as good as the assumption that
+            // transcripts are append-only. If one ever shifts, splicing a neighbouring
+            // message's text into this one would be a silent, invisible corruption — far
+            // worse than leaving the block truncated, which the reader can at least see.
 
             // The re-parsed blocks carry the full strings, so a `Write` or a long `Edit`
             // recovers its diff and not only its text.

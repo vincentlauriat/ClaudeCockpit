@@ -113,6 +113,10 @@ final class CockpitStore {
     private var sessionListTask: Task<Void, Never>?
     private var sessionsWatcher: RecursiveWatcher?
     private var sessionsWatchTask: Task<Void, Never>?
+    /// A targeted pass never prunes: only a complete walk can tell a deleted
+    /// transcript from one the watcher simply did not name. This bounds how
+    /// long a deleted session can linger in the list.
+    var lastFullSessionWalk: Date = .distantPast
 
     /// Last user-visible notice (toast) from a skills action.
     var notice: String?
@@ -264,9 +268,9 @@ final class CockpitStore {
                 pollingInterval: 600)
             self.sessionsWatcher = watcher
             watcher.start()
-            for await _ in watcher.changes {
+            for await changed in watcher.changes {
                 if Task.isCancelled { return }
-                await self.indexSessions(full: false)
+                await self.indexSessions(changedPaths: changed)
             }
         }
     }

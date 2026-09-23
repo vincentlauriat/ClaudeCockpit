@@ -108,6 +108,30 @@ final class LazyBodyTests: XCTestCase {
             .contains { $0.text.contains("Corrige le parseur") })
     }
 
+    /// An offset is only as good as the append-only assumption behind it. If one ever points
+    /// at the wrong line, the block must stay truncated rather than quietly show another
+    /// message's text — a visible gap beats an invisible corruption.
+    func testAStaleOffsetIsRefusedRatherThanSplicedIn() async throws {
+        try writeSessionWithHugeOutput()
+        try await service.index()
+
+        // Point the tool-result message at the *first* line of the transcript instead.
+        let store = try SessionStore(databaseURL: fixture.databaseURL)
+        let head = try store.rows("""
+            SELECT line_offset, line_len FROM messages WHERE uuid = 'big-u'
+            """).first
+        try store.run("""
+            UPDATE messages SET line_offset = ?, line_len = ? WHERE uuid = 'big-r'
+            """, [head?[0], head?[1]])
+
+        let messages = try await service.messages(sessionId: "sess-huge")
+        let result = try XCTUnwrap(messages.flatMap(\.blocks).first { $0.kind == .toolResult })
+        XCTAssertTrue(result.isTruncated, "un offset périmé ne doit pas être suivi")
+        XCTAssertTrue(result.text.hasPrefix("DÉBUT"), "le texte stocké reste en place")
+        XCTAssertFalse(result.text.contains("lance le build"),
+                       "le texte d'un autre message ne doit jamais être recollé ici")
+    }
+
     /// Search only covers what is indexed, and what is indexed stops at the cap. Better said
     /// once here than discovered by a user hunting for a line that is in the transcript.
     func testSearchOnlyReachesTheIndexedPrefixOfALongOutput() async throws {

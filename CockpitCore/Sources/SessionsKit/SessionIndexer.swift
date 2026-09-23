@@ -43,6 +43,21 @@ enum TranscriptWalker {
         return found.sorted { $0.url.path < $1.url.path }
     }
 
+    /// The transcript at an absolute path, or `nil` when the path is not one — a directory,
+    /// something outside the archive, or a file type the viewer does not read.
+    ///
+    /// Used for the targeted pass: `RecursiveWatcher` hands over the paths that changed, and
+    /// re-walking the whole tree to find them again would undo the point of watching.
+    static func describe(path: String, in projectsDir: URL) -> TranscriptFile? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.pathExtension == "jsonl" else { return nil }
+        let root = projectsDir.standardizedFileURL.pathComponents
+        let components = url.pathComponents
+        guard components.count > root.count, Array(components.prefix(root.count)) == root
+        else { return nil }
+        return describe(url: url, components: Array(components.dropFirst(root.count)))
+    }
+
     static func describe(url: URL, components: [String]) -> TranscriptFile? {
         let name = url.deletingPathExtension().lastPathComponent
         switch components.count {
@@ -91,8 +106,12 @@ extension SessionStore {
     /// Each file is resumed from the byte offset reached last time; a file whose mtime **and**
     /// size are unchanged is not even opened. A partially written trailing line is left for the
     /// next pass, exactly like `UsageKit.TranscriptScanner`.
+    /// - Parameter pruneMissing: whether to drop sessions whose transcript is gone. Only a
+    ///   pass that walked the whole archive knows that; a targeted pass sees a handful of
+    ///   paths and must never conclude anything about the rest.
     func index(
         files: [TranscriptFile],
+        pruneMissing: Bool = true,
         onFile: (Int, Int64) -> Void = { _, _ in }
     ) throws -> IndexOutcome {
         var outcome = IndexOutcome()
@@ -101,7 +120,7 @@ extension SessionStore {
             outcome.filesDone += 1
             onFile(outcome.filesDone, outcome.bytesRead)
         }
-        try forgetDisappearedFiles(keeping: files)
+        if pruneMissing { try forgetDisappearedFiles(keeping: files) }
         try linkSubagents()
         return outcome
     }

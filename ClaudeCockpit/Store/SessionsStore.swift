@@ -13,14 +13,33 @@ extension CockpitStore {
     /// Incremental by default: only transcripts whose size or mtime moved are read.
     /// `full` drops the database and rebuilds it, which is the "Reconstruire l'index"
     /// button and the only way to recover from a corrupted file.
-    func indexSessions(full: Bool = false) async {
+    /// How long a deleted transcript may linger before a complete walk removes it.
+    static let fullWalkInterval: TimeInterval = 300
+
+    /// `changedPaths` is what the watcher hands us: only those transcripts are
+    /// re-read. An empty list walks the whole archive, which is also what the
+    /// watcher sends when the kernel reports dropped events.
+    ///
+    /// A targeted pass prunes nothing, so a complete walk still runs at least
+    /// every `fullWalkInterval`, otherwise a transcript deleted on disk would
+    /// stay in the list until the next launch.
+    func indexSessions(full: Bool = false, changedPaths: [String] = []) async {
         if sessions.isEmpty && !full { sessionsState = .loading }
         if full { sessionsState = .loading }
+        let due = Date().timeIntervalSince(lastFullSessionWalk) >= Self.fullWalkInterval
+        let targeted = !full && !changedPaths.isEmpty && !due
         do {
-            let progress = try await sessionService.index(full: full) { [weak self] step in
+            let report: @Sendable (IndexProgress) -> Void = { [weak self] step in
                 // The closure is called from the indexer's own context; the UI owns
                 // `sessionIndex`, so hop to the main actor rather than mutating here.
                 Task { @MainActor in self?.sessionIndex = step }
+            }
+            let progress: IndexProgress
+            if targeted {
+                progress = try await sessionService.index(changedPaths: changedPaths, progress: report)
+            } else {
+                progress = try await sessionService.index(full: full, progress: report)
+                lastFullSessionWalk = Date()
             }
             sessionIndex = progress
             await refreshSessionList()

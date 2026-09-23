@@ -89,6 +89,59 @@ public actor SessionService {
         return snapshot
     }
 
+    /// Indexes only the transcripts whose paths changed, as `RecursiveWatcher` reports them.
+    ///
+    /// The full pass re-walks 986 files; running it on every filesystem event during an
+    /// active session would spend more time listing the archive than reading it. This one
+    /// touches the named paths and nothing else.
+    ///
+    /// - Parameter changedPaths: absolute paths. Anything that is not a transcript inside the
+    ///   archive is ignored. **An empty list means "rescan everything"**, because that is what
+    ///   the watcher sends when the kernel tells it that events were dropped — the one case
+    ///   where the changed set is unknown rather than empty.
+    ///
+    /// Nothing is pruned here: only a pass that walked the whole archive can tell a deleted
+    /// transcript from one it simply was not told about.
+    @discardableResult
+    public func index(
+        changedPaths: [String],
+        progress: (@Sendable (IndexProgress) -> Void)? = nil
+    ) async throws -> IndexProgress {
+        guard !changedPaths.isEmpty else { return try await index(progress: progress) }
+
+        let store = try store()
+        var seen = Set<String>()
+        let files = changedPaths.compactMap { path -> TranscriptFile? in
+            guard let file = TranscriptWalker.describe(path: path, in: paths.projectsDir),
+                  seen.insert(file.url.path).inserted
+            else { return nil }
+            return file
+        }.sorted { $0.url.path < $1.url.path }
+        guard !files.isEmpty else { return currentProgress }
+
+        var snapshot = IndexProgress(
+            filesTotal: files.count, filesDone: 0, bytesRead: 0, isRunning: true,
+            lastRun: currentProgress.lastRun, dbSizeBytes: currentProgress.dbSizeBytes)
+        currentProgress = snapshot
+        progress?(snapshot)
+
+        let outcome = try store.index(files: files, pruneMissing: false) { done, bytes in
+            snapshot.filesDone = done
+            snapshot.bytesRead = bytes
+            progress?(snapshot)
+        }
+
+        snapshot.filesDone = outcome.filesDone
+        snapshot.bytesRead = outcome.bytesRead
+        snapshot.isRunning = false
+        snapshot.lastRun = Date()
+        snapshot.dbSizeBytes = store.databaseSizeBytes
+        currentProgress = snapshot
+        try? store.setMetaValue(String(snapshot.lastRun!.timeIntervalSince1970), for: "last_run")
+        progress?(snapshot)
+        return snapshot
+    }
+
     /// The last known progress. Reading it while an index pass runs is not possible from
     /// outside — the pass holds the actor — so follow a running pass through `index`'s callback.
     public func progress() -> IndexProgress {

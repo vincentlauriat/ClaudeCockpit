@@ -65,6 +65,7 @@ final class IndexBenchmarkTests: XCTestCase {
         print("passe incrémentale : \(String(format: "%.2f", incremental)) s, "
               + "\(second.bytesRead) octets relus")
 
+        try await measureTargetedPass(on: service)
         try await report(on: service)
 
         XCTAssertGreaterThan(progress.filesDone, 0)
@@ -72,6 +73,38 @@ final class IndexBenchmarkTests: XCTestCase {
                           "une passe incrémentale ne doit relire que ce qui a été ajouté")
         XCTAssertLessThan(incremental, 5, "la passe incrémentale doit rester imperceptible")
         XCTAssertLessThan(elapsed, 180, "objectif : moins de 3 minutes sur le corpus complet")
+    }
+
+    /// What the watcher's path list buys: a pass that touches one file against one that
+    /// re-walks the archive. This is the difference between the two during an active session,
+    /// where an event arrives roughly every second.
+    private func measureTargetedPass(on service: SessionService) async throws {
+        guard let heaviest = try await service.heaviestTranscript(),
+              let path = try await service.transcriptURL(sessionId: heaviest.sessionId)?.path
+        else { return }
+
+        let targetedStart = Date()
+        let targeted = try await service.index(changedPaths: [path])
+        let targetedTime = Date().timeIntervalSince(targetedStart)
+
+        let fullStart = Date()
+        let full = try await service.index()
+        let fullTime = Date().timeIntervalSince(fullStart)
+
+        print("""
+
+            ── Passe ciblée contre passe complète ──────────────────────────
+            ciblée   : \(targeted.filesTotal) fichier, \
+            \(String(format: "%.0f", targetedTime * 1000)) ms
+            complète : \(full.filesTotal) fichiers, \
+            \(String(format: "%.0f", fullTime * 1000)) ms
+            ───────────────────────────────────────────────────────────────
+
+            """)
+
+        XCTAssertEqual(targeted.filesTotal, 1)
+        XCTAssertLessThan(targetedTime, fullTime,
+                          "la passe ciblée doit coûter moins qu'un parcours complet")
     }
 
     /// What the index actually made of the real corpus — the numbers that tell whether the
