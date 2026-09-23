@@ -27,7 +27,7 @@ targets:
     dependencies:
       - package: Sparkle
       - package: CockpitCore
-        products: [CockpitShared, UsageKit, QuotaKit, RTKKit, SkillsKit]
+        products: [CockpitShared, UsageKit, QuotaKit, RTKKit, SkillsKit, SessionsKit]
     sources:
       - path: ClaudeCockpit
         excludes:
