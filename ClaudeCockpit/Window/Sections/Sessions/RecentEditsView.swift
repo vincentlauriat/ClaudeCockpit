@@ -160,7 +160,7 @@ struct RecentEditsView: View {
             HStack(alignment: .firstTextBaseline) {
                 SectionLabel(text: UsagePath.shorten(project.cwd))
                 Spacer()
-                Text("\(FRFormat.integer(project.files.count)) \(project.files.count > 1 ? "fichiers" : "fichier") · \(FRFormat.integer(project.editCount)) \(project.editCount > 1 ? "modifications" : "modification")")
+                Text("\(FRFormat.plural(project.files.count, "fichier")) · \(FRFormat.plural(project.editCount, "modification"))")
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.slate)
                     .monospacedDigit()

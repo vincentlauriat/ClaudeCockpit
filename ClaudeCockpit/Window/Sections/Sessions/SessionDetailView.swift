@@ -502,7 +502,7 @@ struct SessionDetailView: View {
             if total > 0 {
                 // The total now counts the same set the pages return, so the two
                 // denominators match and this can honestly say "messages".
-                Text("\(FRFormat.integer(messages.count)) messages sur \(FRFormat.integer(total))")
+                Text("\(FRFormat.plural(messages.count, "message")) sur \(FRFormat.integer(total))")
                     .font(.system(size: 10))
                     .monospacedDigit()
                     .foregroundStyle(Theme.mist)

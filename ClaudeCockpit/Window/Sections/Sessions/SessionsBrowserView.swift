@@ -239,7 +239,7 @@ struct SessionsBrowserView: View {
                 if store.sessionsTruncated {
                     Section {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("\(FRFormat.plural(store.sessions.count, "session")) affichée\(store.sessions.count > 1 ? "s" : "") · il y en a d'autres")
+                            Text("Affichage limité à \(FRFormat.plural(store.sessions.count, "session")) · il y en a d'autres")
                                 .font(.system(size: 11))
                                 .foregroundStyle(Theme.slate)
                             Button("Afficher 200 sessions de plus") {

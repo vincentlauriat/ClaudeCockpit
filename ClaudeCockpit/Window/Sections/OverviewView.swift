@@ -187,7 +187,7 @@ struct OverviewView: View {
                         .font(.display(26))
                         .monospacedDigit()
                         .foregroundStyle(Theme.violet)
-                    Text(todaySessions.count > 1 ? "sessions" : "session")
+                    Text(todaySessions.count < 2 ? "session" : "sessions")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.slate)
                     Spacer()
@@ -230,7 +230,7 @@ struct OverviewView: View {
         let missing = todayCost.missing
         return missing == todaySessions.count
             ? "Aucune de ces sessions n'a enregistré son coût."
-            : "Coût partiel : \(FRFormat.integer(missing)) session(s) sans coût enregistré."
+            : "Coût partiel : \(FRFormat.plural(missing, "session")) sans coût enregistré."
     }
 
     private var insightsCard: some View {
