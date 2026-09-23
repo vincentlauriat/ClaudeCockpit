@@ -7,15 +7,15 @@
     <language>en</language>
     <item>
       <title>v1.1.0</title>
-      <pubDate>Wed, 23 Sep 2026 08:33:48 +0200</pubDate>
-      <sparkle:version>38</sparkle:version>
+      <pubDate>Wed, 23 Sep 2026 08:52:56 +0200</pubDate>
+      <sparkle:version>44</sparkle:version>
       <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
       <sparkle:releaseNotesLink>https://github.com/vincentlauriat/ClaudeCockpit/releases/tag/v1.1.0</sparkle:releaseNotesLink>
       <enclosure
         url="https://github.com/vincentlauriat/ClaudeCockpit/releases/download/v1.1.0/ClaudeCockpit-1.1.0.dmg"
         type="application/octet-stream"
-        sparkle:edSignature="R+NMsPQV+9Rh/y6U7l2d6hhQcgDVDk7QoQgjnPy5nCs7aEG1cWmowoleEBlJNYDmbFml6VufzXinfQB1xfo5DQ==" length="6758910" />
+        sparkle:edSignature="RVqePIQCYuMAtJqSAyJ5PW7GA+u0V7RluIS32BDze0+J1gNkjWaLiLgC86RnPc/4ElsW9UDxnBih5XlI/dg8CA==" length="6788910" />
     </item>
   </channel>
 </rss>
