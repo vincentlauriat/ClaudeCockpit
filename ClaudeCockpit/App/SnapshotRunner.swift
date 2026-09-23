@@ -21,6 +21,16 @@ enum SnapshotRunner {
         // The sessions index is the slow one: a first pass reads the whole archive.
         // Waiting on the flag rather than on a fixed delay keeps the shots meaningful
         // on a cold machine without padding every run on a warm one.
+        // Capture the first-launch state too: on a cold index the section is shown while
+        // it fills, and that screen is the one a new user actually meets first.
+        if store.sessionIndex.isRunning {
+            select(.sessions)
+            try? await Task.sleep(for: .seconds(1.5))
+            if let window = NSApp.windows.first(where: { $0.title == "Claude Cockpit" && $0.isVisible }) {
+                write(window, to: dir.appendingPathComponent("sessions-indexing.png"))
+            }
+        }
+
         let indexDeadline = Date().addingTimeInterval(180)
         while store.sessionIndex.isRunning, Date() < indexDeadline {
             try? await Task.sleep(for: .seconds(1))

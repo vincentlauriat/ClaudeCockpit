@@ -6,7 +6,9 @@ every Claude Code session on your Mac, not just how many tokens it cost.
 ### Sessions
 - **Browser** over every transcript under `~/.claude/projects`, grouped by day or by project,
   with filters (projet, période, étoilées, avec erreurs, sous-agents) and keyboard navigation.
-- **Full-text search** across message text and tool inputs and outputs, with snippets.
+- **Full-text search** across message text, tool inputs and tool outputs, with snippets.
+  Very long tool outputs are indexed up to their first 8 KB: beyond that the text is still
+  readable in the transcript, but it will not match a search.
 - **Transcript detail**: user and assistant turns, collapsible tool calls showing their input
   and their result, coloured diffs for file edits, thinking blocks, sub-agent transcripts
   expanded inline, compaction dividers, and per-turn model, tokens and cost.
